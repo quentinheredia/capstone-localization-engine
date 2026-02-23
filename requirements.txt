@@ -6,3 +6,5 @@ requests
 fastapi
 uvicorn
 python-multipart
+boto3
+dotenv

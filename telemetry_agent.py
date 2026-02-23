@@ -10,6 +10,18 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from collections import defaultdict
 
+import boto3
+from dotenv import load_dotenv
+
+load_dotenv()
+
+s3_client = boto3.client(
+    's3',
+    region_name=os.getenv('AWS_REGION'),
+    aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
+    aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY')
+)
+
 # Import modules
 from poll import poll_one_ap, close_all_sessions
 from processing_engine import process_scan_data
@@ -21,6 +33,7 @@ ENABLE_API_PUSH = False
 ENABLE_CSV_LOGGING = True
 CSV_FILENAME = "telemetry_log.csv"
 PID_FILE = "agent.pid"
+ENABLE_S3_PUSH = True
 
 
 def _write_pid_file():
@@ -124,6 +137,29 @@ def log_to_csv(payload):
         # print(f"[DEBUG] Data successfully appended to {CSV_FILENAME}.")
     except Exception as e:
         print(f"[ERR] Failed to write to CSV: {e}")
+        
+def push_to_s3(payload):
+    if not ENABLE_S3_PUSH: return
+    
+    try:
+        bucket = os.getenv('AWS_BUCKET_NAME')
+        # Create a predictable filename so the Vite frontend knows exactly what to fetch
+        # Example: Carleton_University_Floor_3_latest.json
+        filename = f"{payload['location_id']}_{payload['floor_id']}_latest.json"
+        
+        # We use put_object to overwrite the file every single time
+        s3_client.put_object(
+            Bucket=bucket,
+            Key=filename,
+            Body=json.dumps(payload),
+            ContentType='application/json',
+            # Force browsers/proxies not to cache this for more than 2 seconds
+            CacheControl='max-age=2' 
+        )
+        # print(f"[DEBUG] Successfully pushed {filename} to S3.")
+    except Exception as e:
+        print(f"[ERR] S3 Upload failed: {e}")
+
 
 def main_loop():
     cfg = load_config()
@@ -294,6 +330,7 @@ def main_loop():
                         if ENABLE_API_PUSH:
                             push_decision(cfg, payload)
                         log_to_csv(payload)
+                        push_to_s3(payload)
                         print(f"   FINAL DECISION: {room_data['room']} [x={payload['x']}, y={payload['y']}]")
                         print(f"   (Logged to CSV)")
 
