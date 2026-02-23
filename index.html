@@ -1,0 +1,567 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Telemetry Agent UI</title>
+  <style>
+    :root {
+      --bg: #f5f2ea;
+      --ink: #1f1a17;
+      --accent: #1f5d7a;
+      --accent-2: #b85c38;
+      --panel: #ffffff;
+      --border: #d8d2c8;
+      --muted: #6b625a;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: "IBM Plex Mono", "Courier New", monospace;
+      color: var(--ink);
+      background: radial-gradient(1200px 500px at 15% -10%, #f2e7d7 0%, transparent 60%),
+                  radial-gradient(900px 600px at 110% 0%, #d9e8ef 0%, transparent 55%),
+                  var(--bg);
+      line-height: 1.45;
+    }
+
+    header {
+      padding: 28px 24px 8px;
+    }
+
+    header h1 {
+      margin: 0 0 6px;
+      font-size: 22px;
+      letter-spacing: 0.6px;
+    }
+
+    header p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    main {
+      display: grid;
+      grid-template-columns: 1.2fr 1fr;
+      gap: 16px;
+      padding: 16px 24px 32px;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      box-shadow: 0 4px 14px rgba(0,0,0,0.05);
+    }
+
+    .panel h2 {
+      margin: 0 0 10px;
+      font-size: 16px;
+      letter-spacing: 0.3px;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    label {
+      display: block;
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+
+    input, select, textarea {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font: inherit;
+      background: #fbfaf7;
+    }
+
+    textarea { min-height: 90px; resize: vertical; }
+
+    .row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .pill {
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: #eef3f5;
+      border: 1px solid #d7e3e8;
+      font-size: 12px;
+    }
+
+    .status {
+      display: grid;
+      gap: 8px;
+    }
+
+    .status-item {
+      display: flex;
+      justify-content: space-between;
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: #faf7f1;
+      border: 1px solid var(--border);
+      font-size: 12px;
+    }
+
+    .btns {
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+      flex-wrap: wrap;
+    }
+
+    button {
+      border: 1px solid var(--ink);
+      background: var(--ink);
+      color: #fff;
+      padding: 8px 12px;
+      border-radius: 8px;
+      font: inherit;
+      cursor: pointer;
+    }
+
+    button.secondary {
+      background: #fff;
+      color: var(--ink);
+    }
+
+    .legend {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+      font-size: 12px;
+    }
+
+    .legend span {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      display: inline-block;
+    }
+
+    .dot.good { background: #3f8c6d; }
+    .dot.warn { background: #d38b37; }
+    .dot.bad { background: #c04b3a; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+
+    th, td {
+      text-align: left;
+      padding: 6px 8px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      display: inline-block;
+    }
+
+    .status-dot.green { background: #3f8c6d; }
+    .status-dot.red { background: #c04b3a; }
+
+    .help {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    @media (max-width: 920px) {
+      main { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Telemetry Agent Control</h1>
+    <p>Basic local UI scaffold (static HTML). FastAPI optional.</p>
+  </header>
+
+  <main>
+    <section class="panel">
+      <h2>Connection</h2>
+      <div class="grid">
+        <div>
+          <label for="api-base">API Base URL</label>
+          <input id="api-base" type="text" placeholder="http://127.0.0.1:8000" />
+        </div>
+        <div>
+          <label for="location">Location</label>
+          <input id="location" type="text" placeholder="Qs_House" />
+        </div>
+        <div>
+          <label for="floor">Floor</label>
+          <input id="floor" type="text" placeholder="Ground_Floor" />
+        </div>
+        <div>
+          <label for="poll">Poll Interval (s)</label>
+          <input id="poll" type="number" step="0.1" placeholder="6.0" />
+        </div>
+        <div>
+          <label for="update">Update Window (s)</label>
+          <input id="update" type="number" step="1" placeholder="60" />
+        </div>
+      </div>
+      <div class="btns">
+        <button id="btn-start" type="button">Start Agent</button>
+        <button id="btn-stop" class="secondary" type="button">Stop Agent</button>
+        <button id="btn-refresh" class="secondary" type="button">Refresh</button>
+        <button id="btn-reload" class="secondary" type="button">Reload Config</button>
+      </div>
+      <div style="margin-top:12px;">
+        <label for="config-file">Load Config (YAML)</label>
+        <div class="row">
+          <input id="config-file" type="file" accept=".yml,.yaml" />
+          <button id="btn-upload" class="secondary" type="button">Upload YAML</button>
+        </div>
+      </div>
+      <div class="legend">
+        <span><i class="dot good"></i> Healthy</span>
+        <span><i class="dot warn"></i> Unstable</span>
+        <span><i class="dot bad"></i> Offline</span>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Live Status</h2>
+      <div class="status">
+        <div class="status-item"><span>Agent</span><strong id="stat-agent">--</strong></div>
+        <div class="status-item"><span>Last Device</span><strong id="stat-device">--</strong></div>
+        <div class="status-item"><span>Total Decisions</span><strong id="stat-total">0</strong></div>
+        <div class="status-item"><span>Data Health</span><strong id="stat-health">--</strong></div>
+        <div class="status-item"><span>Last Update</span><strong id="stat-update">--</strong></div>
+        <div class="status-item"><span>Config</span><strong id="stat-config">OK</strong></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Config Information</h2>
+      <div id="info-list" class="help">No information loaded.</div>
+    </section>
+
+    <section class="panel">
+      <h2>Devices</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Device</th>
+            <th>Status</th>
+            <th>Last Scan</th>
+          </tr>
+        </thead>
+        <tbody id="devices-body"></tbody>
+      </table>
+    </section>
+
+    <section class="panel">
+      <h2>Recent Decisions</h2>
+      <div class="grid">
+        <div>
+          <label for="log-search">Search</label>
+          <input id="log-search" type="text" placeholder="device / room" />
+        </div>
+        <div>
+          <label for="log-sev">Severity</label>
+          <select id="log-sev">
+            <option value="">All</option>
+            <option value="INFO">INFO</option>
+            <option value="WARN">WARN</option>
+          </select>
+        </div>
+      </div>
+      <div style="margin-top:12px;">
+        <label for="log">Recent Decisions (max 200)</label>
+        <textarea id="log" readonly placeholder="[12:00:01] IPHONE -> Living (0.72)"></textarea>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Room Map</h2>
+      <div style="border:1px solid var(--border); border-radius:10px; padding:8px;">
+        <svg id="map-svg" viewBox="0 0 100 100" style="width:100%; height:260px;"></svg>
+      </div>
+      <p id="map-warn" class="help"></p>
+    </section>
+
+    <section class="panel">
+      <h2>Raw Scan (Latest)</h2>
+      <div class="status">
+        <div class="status-item"><span>Complete</span><strong id="raw-complete">--</strong></div>
+        <div class="status-item"><span>APs Present</span><strong id="raw-aps">--</strong></div>
+        <div class="status-item"><span>Scan #</span><strong id="raw-scan">--</strong></div>
+        <div class="status-item"><span>Timestamp</span><strong id="raw-time">--</strong></div>
+      </div>
+      <div style="margin-top:12px;">
+        <label for="raw-json">Raw JSON</label>
+        <textarea id="raw-json" readonly placeholder="{ ... }"></textarea>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const apiInput = $("api-base");
+    const logEl = $("log");
+    let lastConfigError = null;
+
+    function apiBase() {
+      const val = apiInput.value.trim();
+      return val ? val.replace(/\/+$/, "") : "http://127.0.0.1:8000";
+    }
+
+    async function getJson(path) {
+      const res = await fetch(`${apiBase()}${path}`);
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      return res.json();
+    }
+
+    async function postJson(path, payload = {}) {
+      const res = await fetch(`${apiBase()}${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      return res.json();
+    }
+
+    function renderInfo(info) {
+      const wrap = $("info-list");
+      if (!info || Object.keys(info).length === 0) {
+        wrap.textContent = "No information loaded.";
+        return;
+      }
+      const lines = Object.entries(info).map(([k, v]) => `${k}: ${JSON.stringify(v)}`);
+      wrap.textContent = lines.join("\n");
+    }
+
+    function renderDevices(items = []) {
+      const body = $("devices-body");
+      body.innerHTML = "";
+      if (!items.length) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = "<td colspan=\"3\" class=\"help\">No devices found.</td>";
+        body.appendChild(tr);
+        return;
+      }
+      items.forEach((d) => {
+        const tr = document.createElement("tr");
+        const dot = d.reachable ? "green" : "red";
+        tr.innerHTML = `
+          <td>${d.device_id || "--"}</td>
+          <td><span class="status-dot ${dot}"></span> ${d.reachable ? "Reachable" : "Unreachable"}</td>
+          <td>${d.last_scan || "--"}</td>
+        `;
+        body.appendChild(tr);
+      });
+    }
+
+    function renderMap(data) {
+      const svg = $("map-svg");
+      const warn = $("map-warn");
+      svg.innerHTML = "";
+      warn.textContent = "";
+      if (!data) return;
+
+      const rooms = data.rooms || [];
+      const devices = data.devices || [];
+      let width = data.floor?.width_m;
+      let height = data.floor?.height_m;
+
+      if (!width || !height) {
+        let maxX = 0;
+        let maxY = 0;
+        rooms.forEach((r) => {
+          (r.polygon || []).forEach((p) => {
+            maxX = Math.max(maxX, p[0]);
+            maxY = Math.max(maxY, p[1]);
+          });
+        });
+        width = width || maxX || 10;
+        height = height || maxY || 10;
+      }
+
+      svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+
+      rooms.forEach((room) => {
+        const poly = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+        const points = (room.polygon || []).map((p) => `${p[0]},${p[1]}`).join(" ");
+        poly.setAttribute("points", points);
+        poly.setAttribute("fill", "#f7f3ec");
+        poly.setAttribute("stroke", "#c9c2b7");
+        poly.setAttribute("stroke-width", "0.05");
+        svg.appendChild(poly);
+      });
+
+      let skipped = 0;
+      devices.forEach((d) => {
+        if (typeof d.x !== "number" || typeof d.y !== "number") {
+          skipped += 1;
+          return;
+        }
+        const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+        dot.setAttribute("cx", d.x);
+        dot.setAttribute("cy", d.y);
+        dot.setAttribute("r", "0.12");
+        dot.setAttribute("fill", d.reachable ? "#3f8c6d" : "#c04b3a");
+        svg.appendChild(dot);
+
+        const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        label.setAttribute("x", d.x + 0.15);
+        label.setAttribute("y", d.y + 0.15);
+        label.setAttribute("font-size", "0.5");
+        label.setAttribute("fill", "#1f1a17");
+        label.textContent = d.device_id || "";
+        svg.appendChild(label);
+      });
+
+      if (skipped > 0) {
+        warn.textContent = `Skipped ${skipped} device(s) with missing coordinates.`;
+      }
+    }
+
+    function renderDecisions(items = []) {
+      if (!items.length) {
+        logEl.value = "";
+        return;
+      }
+      const lines = items.map((d) => {
+        const ts = d.timestamp ? d.timestamp.split("T")[1]?.split(".")[0] : "--:--:--";
+        const sev = d.severity ? `[${d.severity}] ` : "";
+        return `[${ts}] ${sev}${d.message || ""}`.trim();
+      });
+      logEl.value = lines.join("\\n");
+    }
+
+    async function refreshAll() {
+      try {
+        const status = await getJson("/status");
+        $("stat-agent").textContent = status.agent_running ? "Running" : "Stopped";
+        $("stat-device").textContent = status.last_device_id || "--";
+        $("stat-total").textContent = status.total_decisions ?? 0;
+        $("stat-health").textContent = status.data_health_ratio
+          ? `${Math.round(status.data_health_ratio * 100)}%`
+          : "--";
+        $("stat-update").textContent = status.last_update || "--";
+        $("stat-config").textContent = status.config_error ? "Error" : "OK";
+        $("btn-start").disabled = status.agent_running;
+        $("btn-stop").disabled = !status.agent_running;
+        lastConfigError = status.config_error || null;
+      } catch (e) {
+        $("stat-update").textContent = "API offline";
+      }
+
+      try {
+        const sev = $("log-sev").value;
+        const q = $("log-search").value.trim();
+        const params = new URLSearchParams({ limit: "200" });
+        if (sev) params.set("severity", sev);
+        if (q) params.set("q", q);
+        const logs = await getJson(`/logs?${params.toString()}`);
+        renderDecisions(logs.items || []);
+      } catch (e) {
+        renderDecisions([]);
+      }
+
+      try {
+        const cfg = await getJson("/config");
+        renderInfo(cfg.information || {});
+        $("location").value = cfg.telemetry_config?.edge_location_id || "";
+        $("floor").value = cfg.telemetry_config?.edge_floor_id || "";
+        $("poll").value = cfg.telemetry_config?.poll_interval_s || "";
+        $("update").value = cfg.telemetry_config?.update_interval_s || "";
+      } catch (e) {
+        if (lastConfigError) {
+          renderInfo({ error: lastConfigError });
+        } else {
+          renderInfo({});
+        }
+      }
+
+      try {
+        const devices = await getJson("/devices");
+        renderDevices(devices.items || []);
+      } catch (e) {
+        renderDevices([]);
+      }
+
+      try {
+        const map = await getJson("/map");
+        renderMap(map);
+      } catch (e) {
+        renderMap(null);
+      }
+
+      try {
+        const raw = await getJson("/raw");
+        $("raw-complete").textContent = raw.complete ? "Yes" : "No";
+        $("raw-aps").textContent = `${raw.aps_present}/${raw.aps_expected}`;
+        $("raw-scan").textContent = raw.scan_number ?? "--";
+        $("raw-time").textContent = raw.timestamp || "--";
+        $("raw-json").value = JSON.stringify(raw, null, 2);
+      } catch (e) {
+        $("raw-complete").textContent = "--";
+        $("raw-aps").textContent = "--";
+        $("raw-scan").textContent = "--";
+        $("raw-time").textContent = "--";
+        $("raw-json").value = "";
+      }
+    }
+
+    $("btn-start").addEventListener("click", () => postJson("/agent/start").then(refreshAll).catch(() => {}));
+    $("btn-stop").addEventListener("click", () => postJson("/agent/stop").then(refreshAll).catch(() => {}));
+    $("btn-refresh").addEventListener("click", refreshAll);
+    $("btn-reload").addEventListener("click", () => postJson("/config/reload").then(refreshAll).catch(() => {}));
+    $("log-search").addEventListener("input", () => refreshAll());
+    $("log-sev").addEventListener("change", () => refreshAll());
+    $("btn-upload").addEventListener("click", async () => {
+      const fileInput = $("config-file");
+      if (!fileInput.files || !fileInput.files[0]) return;
+      const form = new FormData();
+      form.append("file", fileInput.files[0]);
+      try {
+        const res = await fetch(`${apiBase()}/config/upload`, {
+          method: "POST",
+          body: form,
+        });
+        if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+        await refreshAll();
+      } catch (e) {
+        console.error(e);
+      }
+    });
+
+    apiInput.value = "http://127.0.0.1:8000";
+    refreshAll();
+    setInterval(refreshAll, 5000);
+  </script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+# --- SECURITY ---
+.env
+
+# --- PYTHON CACHE ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- VIRTUAL ENVIRONMENTS ---
+venv/
+env/
+.venv/
+
+# --- AGENT GENERATED DATA & LOGS ---
+telemetry_log.csv
+radiomap.json
+agent.pid
+
+# --- FRONTEND (If Vite/React is in the same repo) ---
+node_modules/
+dist/
+.eslintcache
