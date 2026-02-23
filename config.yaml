@@ -1,0 +1,124 @@
+# --- SYSTEM-WIDE CONFIGURATION ---
+system:
+  localization_method: "fingerprinting"
+  frame_window_minutes: 30
+  consensus_threshold: 0.80
+  signal_filter:
+    noise_floor_dbm: -80
+    min_aps_for_localization: 3
+  rolling_average_window: 5
+  max_distance_for_high_confidence_m: 3.0
+  # Replaces magic numbers in trilateration limit logic
+  boundary_clamp_margin_m: 0.01
+
+# --- EDGE NODE CONFIGURATION ---
+telemetry_config:
+  api_ingest_url: "http://10.8.0.1:3000/api/ingest"
+
+  # Poll 10 times per minute (60s / 10 = 6.0s)
+  poll_interval_s: 6.0
+
+  # Aggregate and decide every 1 minute
+  update_interval_s: 60
+
+  edge_location_id: "Carleton_University"
+  edge_floor_id: "Floor_3"
+
+  # Global defaults to prevent repetition
+  default_ap_credentials:
+    username: admin
+    password: admin
+
+targets:
+  - ssid: "NOTHINGPHONE"
+    radio_override:
+      rssi_at_1m_dbm: -22.0
+      path_loss_n: 4.0
+
+# --- ENVIRONMENT HIERARCHY AND GEOMETRY ---
+locations:
+  #Qs_House:
+  #floors:
+  #Ground_Floor:
+  #width_m: 5.47
+  #height_m: 5.47
+
+  #aps:
+  # APs now inherit 'admin'/'admin' from default_ap_credentials
+  # WAP10:
+  #  host: 192.168.0.101
+  # x: 5.47
+  #y: 0.0
+  #WAP11:
+  # host: 192.168.0.102
+  #x: 0.0
+  #y: 0.0
+  #WAP12:
+  # host: 192.168.0.103
+  #x: 5.47
+  #y: 3.23
+  #WAP13:
+  # host: 192.168.0.104
+  #x: 0.0
+  #y: 3.23
+  #WAP14:
+  # host: 192.168.0.105
+  #x: 4.52
+  #y: 5.47
+  #WAP15:
+  # host: 192.168.0.106
+  # x: 0.0
+  # y: 5.47
+
+  #rooms:
+  # Living:
+  #  center_x: 2.7
+  # center_y: 1.6
+  #polygon:
+  # - [0.0, 0.0]
+  #- [0.0, 3.23]
+  #- [5.47, 3.23]
+  #- [5.47, 0.0]
+
+  #Kitchen:
+  # center_x: 2.2
+  # center_y: 4.35
+  # polygon:
+  #  - [0.0, 3.23]
+  #  - [0.0, 5.47]
+  #  - [4.52, 5.47]
+  # - [4.52, 3.23]
+
+  Carleton_University:
+    floors:
+      Floor_3:
+        width_m: 4.88
+        height_m: 3.1
+
+        aps:
+          AP31:
+            host: 192.168.0.31
+            x: 0.0
+            y: 0.0
+          AP32:
+            host: 192.168.0.103
+            x: 4.88
+            y: 0.0
+          AP33:
+            host: 192.168.0.33
+            x: 0.0
+            y: 3.1
+          AP34:
+            host: 192.168.0.34
+            x: 4.88
+            y: 3.1
+
+        rooms:
+          324B:
+            center_x: 2.44
+            center_y: 1.55
+            polygon:
+              - [0.0, 0.0]
+              - [4.88, 0.0]
+              - [4.88, 3.1]
+              - [0.0, 3.1]
