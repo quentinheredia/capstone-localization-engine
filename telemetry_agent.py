@@ -326,7 +326,7 @@ def main_loop():
                             "x": room_data["coords"][0], 
                             "y": room_data["coords"][1],
                             "scan_number": total_cycles_in_window
-                        }
+                        }   
                         if ENABLE_API_PUSH:
                             push_decision(cfg, payload)
                         log_to_csv(payload)
