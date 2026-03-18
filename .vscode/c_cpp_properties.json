@@ -1,0 +1,51 @@
+{
+  "configurations": [
+    {
+      "name": "windows-gcc-x64",
+      "intelliSenseMode": "windows-gcc-x64",
+      "compilerPath": "C:/msys64/mingw64/bin/gcc.exe",
+      "cStandard": "c17",
+      "cppStandard": "c++17",
+      "includePath": [
+        "${workspaceFolder}/**",
+        "${workspaceFolder}/Hybrid/core_cpp",
+        "${workspaceFolder}/Hybrid/core_cpp/math_core",
+        "${workspaceFolder}/Hybrid/core_cpp/parsers",
+        "${workspaceFolder}/Hybrid/core_cpp/engines"
+      ],
+      "defines": [
+        "UNICODE",
+        "_UNICODE"
+      ]
+    },
+    {
+      "name": "WSL2 (GCC inside Windows Subsystem for Linux)",
+      "intelliSenseMode": "linux-gcc-x64",
+      "compilerPath": "/usr/bin/g++",
+      "cStandard": "c17",
+      "cppStandard": "c++17",
+      "includePath": [
+        "${workspaceFolder}/Hybrid/core_cpp",
+        "${workspaceFolder}/Hybrid/core_cpp/math_core",
+        "${workspaceFolder}/Hybrid/core_cpp/parsers",
+        "${workspaceFolder}/Hybrid/core_cpp/engines",
+        "${default}"
+      ]
+    },
+    {
+      "name": "Linux / Docker (GCC)",
+      "intelliSenseMode": "linux-gcc-x64",
+      "compilerPath": "/usr/bin/g++",
+      "cStandard": "c17",
+      "cppStandard": "c++17",
+      "includePath": [
+        "${workspaceFolder}/Hybrid/core_cpp",
+        "${workspaceFolder}/Hybrid/core_cpp/math_core",
+        "${workspaceFolder}/Hybrid/core_cpp/parsers",
+        "${workspaceFolder}/Hybrid/core_cpp/engines",
+        "${default}"
+      ]
+    }
+  ],
+  "version": 4
+}

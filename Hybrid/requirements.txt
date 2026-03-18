@@ -1,0 +1,9 @@
+pybind11>=2.11
+pyyaml>=6.0
+boto3>=1.28
+python-dotenv>=1.0
+fastapi>=0.100
+uvicorn[standard]>=0.23
+python-multipart>=0.0.9
+paho-mqtt>=1.6
+numpy>=1.24

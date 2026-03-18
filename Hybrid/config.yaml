@@ -1,0 +1,189 @@
+# =============================================================================
+# CAPSTONE LOCALIZATION — HYBRID ARCHITECTURE CONFIG
+# =============================================================================
+# Golden Rule:  Python owns I/O.  C++ owns math.
+#
+# Physical hierarchy:
+#   Campus  →  Building  →  Floor  →  Room
+#
+# The active location is set by the three edge_* keys in telemetry_config.
+# Call select_location() in app.py (or pass overrides on the CLI) to switch.
+# =============================================================================
+
+# --- SYSTEM-WIDE SETTINGS ----------------------------------------------------
+system:
+  # "trilateration" | "fingerprinting"
+  # Hot-swappable at runtime via POST /config/reload
+  localization_method: "fingerprinting"
+
+  rolling_average_window: 5
+
+  signal_filter:
+    noise_floor_dbm: -80
+    min_aps_for_localization: 3
+
+  max_distance_for_high_confidence_m: 3.0
+  boundary_clamp_margin_m: 0.01
+  consensus_threshold: 0.80
+  frame_window_minutes: 1
+
+# --- ACTIVE LOCATION (hardcoded for now, passed to select_location()) --------
+telemetry_config:
+  edge_campus_id: "Carleton_University"
+  edge_building_id: "Canal_Building"
+  edge_floor_id: "Floor_1"
+
+  poll_interval_s: 3
+  update_interval_s: 60
+
+  prompts:
+    main: "eap350>"
+    sub: "eap350/wless2/network>"
+
+  default_ap_credentials:
+    username: admin
+    password: admin
+
+# --- TARGET DEVICES ----------------------------------------------------------
+targets:
+  - ssid: "NOTHINGPHONE"
+    radio_override:
+      rssi_at_1m_dbm: -22.0
+      path_loss_n: 4.0
+
+  - ssid: "Apple"
+    radio_override:
+      rssi_at_1m_dbm: -22.0
+      path_loss_n: 4.0
+
+  - ssid: "Hphone"
+    radio_override:
+      rssi_at_1m_dbm: -22.0
+      path_loss_n: 4.0
+
+  # - ssid: "SAMSUNGPHONE"
+  #   radio_override:
+  #     rssi_at_1m_dbm: -22.0
+  #     path_loss_n:    4.0
+
+# --- PHYSICAL ENVIRONMENT  ---------------------------------------------------
+# Hierarchy: Campus > Building > Floor > Room
+#
+# wifi_aps    → polled by TelnetPipe  → C++ RSSIEngine
+# tof_anchors → received by MQTTPipe → C++ ToFEngine  (ESP32-C3, future)
+# rooms       → polygon definitions for room classification
+#
+# NOTE: rooms is a sibling of wifi_aps/tof_anchors under each floor —
+#       NOT nested inside an individual AP definition.
+# =============================================================================
+
+locations:
+  Carleton_University:
+    buildings:
+      Canal_Building:
+        floors:
+          Floor_1:
+            width_m: 10.0
+            height_m: 20.0
+
+            wifi_aps:
+              AP1:
+                host: 192.168.1.115
+                x: 3.0
+                y: 7.0
+              AP2:
+                host: 192.168.1.8
+                x: 3.0
+                y: 7.0
+              AP3:
+                host: 192.168.1.14
+                x: 3.0
+                y: 7.0
+
+            tof_anchors: {}
+
+            rooms:
+              101:
+                center_x: 2.44
+                center_y: 1.55
+                polygon:
+                  - [0.0, 0.0]
+                  - [6.0, 0.0]
+                  - [6.0, 7.0]
+                  - [0.0, 7.0]
+
+          Floor_2:
+            width_m: 10.0
+            height_m: 20.0
+
+            wifi_aps:
+              AP1:
+                host: ""
+                x: 0.0
+                y: 0.0
+
+            tof_anchors: {}
+
+            rooms:
+              201:
+                center_x: 2.44
+                center_y: 1.55
+                polygon:
+                  - [0.0, 0.0]
+                  - [6.0, 0.0]
+                  - [6.0, 7.0]
+                  - [0.0, 7.0]
+
+      Mackenzie_Building:
+        floors:
+          Floor_3:
+            width_m: 6.0
+            height_m: 7.0
+
+            wifi_aps:
+              AP1:
+                host: ""
+                x: 0.0
+                y: 0.0
+
+            tof_anchors: {}
+              # ESP_1:
+              #   mac: "AA:BB:CC:DD:EE:01"
+              #   x:   2.0
+              #   y:   5.0
+
+            rooms:
+              472:
+                center_x: 2.44
+                center_y: 1.55
+                polygon:
+                  - [0.0, 0.0]
+                  - [6.0, 0.0]
+                  - [6.0, 7.0]
+                  - [0.0, 7.0]
+
+              # HALL-WASHROOM:
+              #   center_x: 4.5
+              #   center_y: 5.5
+              #   polygon:
+              #     - [3.0, 4.0]
+              #     - [6.0, 4.0]
+              #     - [6.0, 7.0]
+              #     - [3.0, 7.0]
+
+# --- MQTT BROKER (for ESP32-C3 ToF anchors) ----------------------------------
+mqtt:
+  broker_host: "localhost"
+  broker_port: 1883
+  topic_prefix: "capstone"
+  keepalive_s: 60
+
+# --- CLOUD / LOCAL I/O -------------------------------------------------------
+# AWS credentials live in .env — never committed to git.
+# radiomap_path uses {campus}_{building}_{floor} so each floor has its own
+# calibration file. cloud_io.py resolves the template at runtime.
+cloud:
+  s3_key_template: "{campus}_{building}_{floor}_latest.json"
+  s3_cache_control: "max-age=2"
+  radiomap_path: "radiomap_{campus}_{building}_{floor}.json"
+  csv_log_path: "telemetry_log.csv"

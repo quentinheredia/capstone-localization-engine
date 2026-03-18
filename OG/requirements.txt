@@ -1,0 +1,10 @@
+telnetlib3
+PyYAML
+numpy
+scipy
+requests
+fastapi
+uvicorn
+python-multipart
+boto3
+dotenv

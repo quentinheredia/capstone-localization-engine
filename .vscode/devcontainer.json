@@ -1,0 +1,27 @@
+{
+  "name": "Capstone Localization (Docker)",
+  "dockerfilePath": "../Hybrid/Dockerfile",
+  "context": "../Hybrid",
+  "target": "builder",
+  "workspaceFolder": "/app",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-vscode.cpptools",
+        "ms-vscode.cmake-tools",
+        "ms-python.python"
+      ],
+      "settings": {
+        "C_Cpp.default.compilerPath": "/usr/bin/g++",
+        "C_Cpp.default.intelliSenseMode": "linux-gcc-x64",
+        "C_Cpp.default.cppStandard": "c++17",
+        "C_Cpp.default.includePath": [
+          "${workspaceFolder}/core_cpp",
+          "${workspaceFolder}/core_cpp/math_core",
+          "${workspaceFolder}/core_cpp/parsers",
+          "${workspaceFolder}/core_cpp/engines"
+        ]
+      }
+    }
+  }
+}

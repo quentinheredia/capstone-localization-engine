@@ -1,0 +1,48 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Python: app.py (FastAPI)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/Hybrid/src_python/app.py",
+      "cwd": "${workspaceFolder}/Hybrid",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/Hybrid/src_python"
+      },
+      "console": "integratedTerminal",
+      "preLaunchTask": "CMake: Build"
+    },
+    {
+      "name": "Python: test_capstone_core.py",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/Hybrid/tests/test_capstone_core.py",
+      "cwd": "${workspaceFolder}/Hybrid",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/Hybrid/src_python"
+      },
+      "console": "integratedTerminal",
+      "preLaunchTask": "CMake: Build"
+    },
+    {
+      "name": "C/C++ Runner: Debug Session",
+      "type": "cppdbg",
+      "request": "launch",
+      "args": [],
+      "stopAtEntry": false,
+      "externalConsole": true,
+      "cwd": "c:/Users/qmant/OneDrive/Desktop/Hidden/repos/School/CAPSTONE_LOCALIZATION/Hybrid/core_cpp/engines",
+      "program": "c:/Users/qmant/OneDrive/Desktop/Hidden/repos/School/CAPSTONE_LOCALIZATION/Hybrid/core_cpp/engines/build/Debug/outDebug",
+      "MIMode": "gdb",
+      "miDebuggerPath": "gdb",
+      "setupCommands": [
+        {
+          "description": "Enable pretty-printing for gdb",
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        }
+      ]
+    }
+  ]
+}
