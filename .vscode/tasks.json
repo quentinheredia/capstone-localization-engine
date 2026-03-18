@@ -1,0 +1,171 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+
+    // ── DEFAULT BUILD TASK (Ctrl+Shift+B) ─────────────────────────────────
+    // Compiles every C++ translation unit into a shared library (.dll).
+    // No pybind11, no main() required — pure linker correctness check.
+    // All -I flags are explicit so no file needs another file's full path.
+    {
+      "label": "Build: All C++ sources (g++)",
+      "type": "shell",
+      "command": "g++",
+      "args": [
+        "-std=c++17",
+        "-Wall", "-Wextra", "-g3",
+        "-shared", "-fPIC",
+        "-I", "${workspaceFolder}/Hybrid/core_cpp",
+        "-I", "${workspaceFolder}/Hybrid/core_cpp/math_core",
+        "-I", "${workspaceFolder}/Hybrid/core_cpp/parsers",
+        "-I", "${workspaceFolder}/Hybrid/core_cpp/engines",
+        "${workspaceFolder}/Hybrid/core_cpp/math_core/trilateration.cpp",
+        "${workspaceFolder}/Hybrid/core_cpp/math_core/geometry.cpp",
+        "${workspaceFolder}/Hybrid/core_cpp/math_core/knn_matrix.cpp",
+        "${workspaceFolder}/Hybrid/core_cpp/math_core/signal_filters.cpp",
+        "${workspaceFolder}/Hybrid/core_cpp/parsers/telnet_parser.cpp",
+        "${workspaceFolder}/Hybrid/core_cpp/engines/rssi_engine.cpp",
+        "${workspaceFolder}/Hybrid/core_cpp/engines/fingerprint_engine.cpp",
+        "${workspaceFolder}/Hybrid/core_cpp/engines/tof_engine.cpp",
+        "-o", "${workspaceFolder}/Hybrid/build/capstone_core.dll"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/Hybrid"
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      },
+      "problemMatcher": {
+        "owner": "cpp",
+        "fileLocation": "absolute",
+        "pattern": {
+          "regexp": "^(.*):(\\d+):(\\d+):\\s+(warning|error):\\s+(.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "severity": 4,
+          "message": 5
+        }
+      }
+    },
+
+    // ── CMake configure ────────────────────────────────────────────────────
+    // Run this once after installing pybind11 (pip install pybind11).
+    // Only needed for the full Python-callable .pyd module.
+    {
+      "label": "CMake: Configure",
+      "type": "shell",
+      "command": "cmake",
+      "args": [
+        "-S", "${workspaceFolder}/Hybrid",
+        "-B", "${workspaceFolder}/Hybrid/build",
+        "-DCMAKE_BUILD_TYPE=Debug",
+        "-G", "MinGW Makefiles"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/Hybrid"
+      },
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+
+    // ── CMake build ────────────────────────────────────────────────────────
+    {
+      "label": "CMake: Build (pybind11 module)",
+      "type": "shell",
+      "command": "cmake",
+      "args": [
+        "--build", "${workspaceFolder}/Hybrid/build",
+        "--config", "Debug",
+        "--parallel"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/Hybrid"
+      },
+      "dependsOn": "CMake: Configure",
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": {
+        "owner": "cpp",
+        "fileLocation": "absolute",
+        "pattern": {
+          "regexp": "^(.*):(\\d+):(\\d+):\\s+(warning|error):\\s+(.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "severity": 4,
+          "message": 5
+        }
+      }
+    },
+
+    // ── Run FastAPI server ─────────────────────────────────────────────────
+    {
+      "label": "Run: app.py (FastAPI server)",
+      "type": "shell",
+      "command": "python",
+      "args": ["src_python/app.py"],
+      "options": {
+        "cwd": "${workspaceFolder}/Hybrid"
+      },
+      "group": "none",
+      "isBackground": true,
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      },
+      "problemMatcher": []
+    },
+
+    // ── Docker build & run ─────────────────────────────────────────────────
+    {
+      "label": "Docker: Build image",
+      "type": "shell",
+      "command": "docker",
+      "args": ["build", "-t", "capstone-hybrid", "."],
+      "options": {
+        "cwd": "${workspaceFolder}/Hybrid"
+      },
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Docker: Run (port 8000)",
+      "type": "shell",
+      "command": "docker",
+      "args": [
+        "run", "--rm",
+        "-p", "8000:8000",
+        "--env-file", "${workspaceFolder}/.env",
+        "capstone-hybrid"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/Hybrid"
+      },
+      "dependsOn": "Docker: Build image",
+      "group": "none",
+      "isBackground": true,
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      },
+      "problemMatcher": []
+    }
+  ]
+}
