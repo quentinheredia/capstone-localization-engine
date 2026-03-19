@@ -1,0 +1,59 @@
+{
+  "name": "ips-platform",
+  "version": "1.0.0",
+  "description": "IPS Platform — Indoor Positioning System Desktop App",
+  "main": "electron/main.js",
+  "homepage": "./",
+  "author": "Your Name",
+  "license": "MIT",
+  "scripts": {
+    "dev": "concurrently \"npm run electron\" \"npm run start\"",
+    "start": "cross-env BROWSER=none PORT=3000 react-scripts start",
+    "build": "react-scripts build",
+    "electron": "wait-on http://localhost:3000 && electron .",
+    "electron-dev": "electron . --dev",
+    "electron-build": "npm run build && electron-builder",
+    "dist": "npm run build && electron-builder --publish never",
+    "dist:win": "npm run build && electron-builder --win",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:linux": "npm run build && electron-builder --linux"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-scripts": "5.0.1"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.0",
+    "cross-env": "^7.0.3",
+    "electron": "^27.0.0",
+    "electron-builder": "^24.6.4",
+    "wait-on": "^7.0.1"
+  },
+  "build": {
+    "appId": "com.ips.platform",
+    "productName": "IPS Platform",
+    "files": [
+      "build/**/*",
+      "electron/**/*",
+      "node_modules/**/*"
+    ],
+    "directories": {
+      "buildResources": "electron"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  }
+}

@@ -1,285 +1,364 @@
-# Capstone Localization — Telemetry Engine
+# IPS Platform — Indoor Positioning System
 
-Real-time indoor localization tracking a target device across a defined floor plan using WiFi RSSI (TP-Link EAP350 APs) and, optionally, Time-of-Flight ranging (ESP32-C3 anchors).
+Real-time indoor localization that tracks devices across campus floor plans using WiFi RSSI trilateration, RF fingerprinting (KNN), BLE, and Time-of-Flight. Includes a full desktop management app for configuring and monitoring the system.
 
 ---
 
-## Repository Layout
+## For Teammates — Getting Started
+
+### What You Need
+
+| Requirement | Version | Download |
+|---|---|---|
+| Python | 3.11 or newer | https://python.org/downloads |
+| PostgreSQL | 15 or newer | https://postgresql.org/download or Docker |
+| Git | Any | https://git-scm.com |
+| Docker (optional) | Desktop | https://docker.com/products/docker-desktop |
+
+> **Windows users:** Python must be on your PATH. When installing Python, check the box that says "Add python.exe to PATH".
+
+---
+
+### Step 1 — Clone the Repo
+
+```bash
+git clone <your-repo-url>
+cd CAPSTONE_LOCALIZATION
+```
+
+---
+
+### Step 2 — Set Up PostgreSQL
+
+The platform backend needs a Postgres database. Pick whichever option is easiest:
+
+**Option A: Docker (no Postgres install needed)**
+
+```bash
+docker run --name ips-postgres \
+  -e POSTGRES_USER=ips \
+  -e POSTGRES_PASSWORD=ips \
+  -e POSTGRES_DB=ips_platform \
+  -p 5432:5432 \
+  -d postgres:15
+```
+
+Run this once. After that, start it again any time with:
+```bash
+docker start ips-postgres
+```
+
+**Option B: System PostgreSQL (if you already have it installed)**
+
+```bash
+# Windows
+net start postgresql-x64-15
+
+# macOS (Homebrew)
+brew services start postgresql@15
+
+# Linux
+sudo systemctl start postgresql
+```
+
+Then create the database:
+```bash
+psql -U postgres -c "CREATE USER ips WITH PASSWORD 'ips';"
+psql -U postgres -c "CREATE DATABASE ips_platform OWNER ips;"
+```
+
+---
+
+### Step 3 — Install Python Dependencies
+
+Open a terminal in the repo root and run all three:
+
+```bash
+# Desktop app
+pip install pywebview requests
+
+# Platform backend (admin API + database)
+pip install -r platform/backend/requirements.txt
+
+# Hybrid engine (localization)
+pip install -r Hybrid/requirements.txt
+```
+
+> If you see `pip: command not found`, try `pip3` instead. On Windows you may need to run as Administrator.
+
+---
+
+### Step 4 — Create the `.env` File
+
+Copy the example and fill in your AWS credentials (S3 logging is optional — the system works without it):
+
+```bash
+cp .env.example .env
+```
+
+If there is no `.env.example`, create `.env` in the repo root:
+
+```env
+AWS_ACCESS_KEY_ID=your_key_here
+AWS_SECRET_ACCESS_KEY=your_secret_here
+AWS_DEFAULT_REGION=us-east-1
+S3_BUCKET_NAME=capstone-telemetry-bucket
+MQTT_BROKER=localhost
+MQTT_PORT=1883
+```
+
+> S3 is only needed for cloud logging. Leave the AWS fields blank if you don't have credentials — the system still runs and logs locally.
+
+---
+
+### Step 5 — Run the Desktop App
+
+**Windows:** Double-click `IPS Platform.bat` in the repo root.
+
+**Any OS (or if you prefer the terminal):**
+```bash
+python desktop_app.py
+```
+
+This opens a native desktop window and automatically starts both backend servers. The app is ready when the loading screen disappears and the sidebar appears.
+
+That's it. Everything runs from one command.
+
+---
+
+## What the Desktop App Does
+
+When you run `desktop_app.py` it:
+
+1. Starts the **Platform Backend** on port 8080 (manages your campus/floor/room configuration in Postgres)
+2. Starts the **Hybrid Engine** on port 8000 (the actual localization engine — polls APs, runs C++ math, tracks devices)
+3. Opens the **Management UI** in a native desktop window
+
+When you close the window, both servers shut down cleanly.
+
+---
+
+## Running the Backends Manually (for development)
+
+If you prefer to run things separately, open three terminals:
+
+**Terminal 1 — PostgreSQL** (skip if already running)
+```bash
+docker start ips-postgres
+```
+
+**Terminal 2 — Platform Backend** (port 8080)
+```bash
+cd platform/backend
+python main.py
+```
+
+**Terminal 3 — Hybrid Engine** (port 8000)
+```bash
+cd Hybrid
+python src_python/app.py
+```
+
+Then open `platform/frontend/index.html` directly in a browser.
+
+---
+
+## Repo Structure
 
 ```
 CAPSTONE_LOCALIZATION/
-├── OG/               # Original pure-Python monolith (fully working, production-stable)
-└── Hybrid/           # New architecture: Python I/O + C++ math (pybind11)
-    ├── CMakeLists.txt
-    ├── Dockerfile
-    ├── config.yaml
-    ├── requirements.txt
-    ├── core_cpp/             # C++ engines (compiled → capstone_core.so)
-    │   ├── math_core/        # trilateration, geometry, knn, signal filters
-    │   ├── parsers/          # EAP350 APSCAN table parser
-    │   └── engines/          # rssi_engine, fingerprint_engine, tof_engine
-    ├── src_python/           # Python orchestrator + FastAPI server
-    │   ├── app.py            # Entry point — FastAPI + asyncio poll loop
-    │   ├── models.py         # DTOs only (no math)
-    │   ├── engine_wrappers.py# Python ↔ C++ bridge
-    │   ├── data_pipes.py     # TelnetPipe (WiFi) + MQTTPipe (ESP32 ToF)
-    │   └── cloud_io.py       # S3, CSV log, radiomap.json
-    └── tests/
-        └── test_capstone_core.py
-```
-
-> **Golden Rule:** If it _waits_ (I/O, network, cloud) → Python. If it _calculates_ (trilateration, filtering, geometry, KNN) → C++.
-
----
-
-## Running the Hybrid Architecture
-
-### Option A — Docker (recommended, no local toolchain needed)
-
-```bash
-cd Hybrid
-
-# Build image (compiles C++ inside the container)
-docker build -t capstone-hybrid .
-
-# Run — API served on http://localhost:8000
-# .env lives at the repo root, one level up from Hybrid/
-docker run --rm -p 8000:8000 --env-file ../.env capstone-hybrid
-```
-
-To persist the CSV log between runs, mount a volume:
-
-```bash
-docker run --rm -p 8000:8000 --env-file ../.env \
-  -v $(pwd)/data:/app/src_python/data \
-  capstone-hybrid
+│
+├── desktop_app.py                  # ← Run this to start everything
+│
+├── platform/
+│   ├── frontend/
+│   │   └── index.html              # Management UI (React, single file)
+│   └── backend/
+│       ├── main.py                 # FastAPI admin API (port 8080)
+│       ├── models/                 # SQLAlchemy: campus, building, floor, room, anchor, tag
+│       ├── api/                    # REST routes
+│       └── config_gen/             # Generates Hybrid config.yaml from database
+│
+├── Hybrid/                         # Localization engine (port 8000)
+│   ├── src_python/
+│   │   └── app.py                  # FastAPI + asyncio poll loop
+│   ├── core_cpp/                   # C++ math engines (trilateration, KNN, ToF)
+│   ├── CMakeLists.txt              # pybind11 build
+│   └── config.yaml                 # AP positions, floor layout, targets
+│
+├── OG/                             # Original Python monolith (stable fallback)
+│   ├── api_server.py
+│   └── telemetry_agent.py
+│
+└── .env                            # AWS + MQTT credentials (never commit this)
 ```
 
 ---
 
-### Option B — Local (Linux / WSL / macOS)
+## The Management UI
 
-**Prerequisites:** Python 3.11+, CMake ≥ 3.16, g++ with C++17 support.
+The desktop app loads the UI automatically. If running manually, open `platform/frontend/index.html` in a browser.
 
-**1. Install Python dependencies**
+**Setup Wizard** — First-time configuration. Walk through:
+- Create a campus (e.g. "Carleton University")
+- Add a building (e.g. "Canal Building")
+- Add floors with dimensions in metres
+- Draw rooms by entering polygon coordinates
+- Place anchors (APs and ESP32s) with their IP/MAC and physical position
 
-```bash
-cd Hybrid
-pip install -r requirements.txt
-```
+**Map View** — Live floor plan rendered from your polygon coordinates. Shows room outlines, anchor positions, and real-time device location (updates every 3 seconds when the engine is running).
 
-**2. Build the C++ module**
+**Devices** — Tables for all anchors (APs, ESP32s) and tracked tags. Shows status, last poll time, and current localization estimates.
 
-```bash
-mkdir -p build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release \
-         -Dpybind11_DIR=$(python3 -m pybind11 --cmakedir)
-cmake --build . --parallel
-cd ..
-```
-
-This compiles all C++ engines and copies `capstone_core.<platform>.so` into `src_python/` automatically.
-
-**3. Verify the build**
-
-```bash
-python tests/test_capstone_core.py
-# Expected: 19 passed, 0 failed
-```
-
-**4. Start the server**
-
-```bash
-cd src_python
-python app.py
-# or
-uvicorn app:app --host 0.0.0.0 --port 8000 --reload
-```
-
-API is now live at **http://localhost:8000**
+**Logs** — Boundary crossings, alerts, and live engine logs.
 
 ---
 
-### Option C — Local (Windows, native MSVC)
+## Configuration (`Hybrid/config.yaml`)
 
-Open a **VS 2022 Developer Command Prompt**, then:
+Controls the localization engine. The platform backend can generate this file for you from the database via the Setup Wizard. Key fields:
 
-```bat
-cd Hybrid
-pip install -r requirements.txt
+| Field | Default | Description |
+|---|---|---|
+| `system.localization_method` | `trilateration` | `"trilateration"` or `"fingerprinting"` |
+| `telemetry_config.poll_interval_s` | `3` | How often each AP is polled (seconds) |
+| `telemetry_config.update_interval_s` | `60` | How often a verdict is emitted (seconds) |
+| `locations.*.floors.*.wifi_aps` | — | AP host IPs and (x, y) coordinates |
+| `locations.*.floors.*.rooms` | — | Room polygons in metres from floor origin |
 
-mkdir build && cd build
-cmake .. -G "Visual Studio 17 2022" -A x64 ^
-         -Dpybind11_DIR=<output of: python -m pybind11 --cmakedir>
-cmake --build . --config Release
-cd ..
-
-python tests\test_capstone_core.py
-cd src_python && python app.py
-```
-
----
-
-## Environment Variables (`.env`)
-
-Create `Hybrid/.env` — never commit this file:
-
-```env
-AWS_ACCESS_KEY_ID=YOUR_KEY
-AWS_SECRET_ACCESS_KEY=YOUR_SECRET
-AWS_BUCKET_NAME=capstone-telemetry-bucket
-AWS_REGION=us-east-2
-```
-
-S3 is optional. If these are not set, the engine still runs and logs to `telemetry_log.csv` locally.
-
----
-
-## Configuration (`config.yaml`)
-
-All runtime behaviour is controlled by `Hybrid/config.yaml`. Key fields:
-
-| Field                                | Default         | Description                                   |
-| ------------------------------------ | --------------- | --------------------------------------------- |
-| `system.localization_method`         | `trilateration` | `"trilateration"` or `"fingerprinting"`       |
-| `system.rolling_average_window`      | `5`             | Smoothing window fed into C++ RSSIFilter      |
-| `telemetry_config.poll_interval_s`   | `3`             | How often each AP is polled                   |
-| `telemetry_config.update_interval_s` | `60`            | Aggregation + verdict window                  |
-| `locations.*.floors.*.wifi_aps`      | —               | AP host IPs and (x, y) coordinates            |
-| `locations.*.floors.*.tof_anchors`   | `{}`            | ESP32-C3 MAC addresses and (x, y) coordinates |
-| `locations.*.floors.*.rooms`         | —               | Room polygons (metres from floor-plan origin) |
-
-**Hot-swap localization method** without restarting:
-
+Hot-swap the localization method without restarting:
 ```bash
 curl -X POST http://localhost:8000/config/reload
 ```
 
 ---
 
-## API Endpoints
+## Engine API (port 8000)
 
-| Method | Path                  | Description                                     |
-| ------ | --------------------- | ----------------------------------------------- |
-| GET    | `/health`             | Liveness check, poll loop status                |
-| GET    | `/status`             | Last verdict timestamp, decision count          |
-| GET    | `/map`                | Floor geometry + live device positions (for UI) |
-| GET    | `/decisions?limit=50` | Recent localization decisions                   |
-| GET    | `/devices`            | Target device reachability                      |
-| GET    | `/raw`                | Last raw RSSI snapshot from APs                 |
-| GET    | `/logs?severity=WARN` | System logs (filterable)                        |
-| GET    | `/config`             | Current loaded config                           |
-| POST   | `/config/reload`      | Re-read config.yaml from disk                   |
-| POST   | `/config/upload`      | Upload a new config.yaml via multipart          |
-| POST   | `/survey/{room}`      | Add a fingerprint sample to radiomap.json       |
+| Method | Path | Description |
+|---|---|---|
+| GET | `/health` | Liveness check, poll loop status |
+| GET | `/status` | Last verdict timestamp, decision count |
+| GET | `/map` | Floor geometry + live device positions |
+| GET | `/decisions?limit=50` | Recent localization decisions |
+| GET | `/devices` | Target device reachability |
+| GET | `/raw` | Last raw RSSI snapshot from APs |
+| GET | `/logs?severity=WARN` | System logs |
+| POST | `/config/reload` | Re-read config.yaml from disk |
+| POST | `/survey/{room}` | Add a fingerprint sample for a room |
 
 ---
 
-## RF Fingerprinting (optional)
+## Building the C++ Engine (Hybrid only, optional)
 
-Fingerprinting is more reliable than trilateration in cluttered environments. To use it:
+The C++ engines are pre-compiled in the Docker image. If you're running locally and want to compile them:
 
-**1. Collect calibration samples**
-
-Stand in a room and POST its RSSI snapshot to the survey endpoint. Collect at least 10 samples per room, including hallways and "outside" areas:
-
+**Linux / macOS / WSL**
 ```bash
-curl -X POST http://localhost:8000/survey/472 \
-     -H "Content-Type: application/json" \
-     -d '{"AP31": -45.0, "AP32": -55.0, "AP33": -68.0}'
+cd Hybrid
+pip install pybind11
+mkdir -p build && cd build
+cmake .. -Dpybind11_DIR=$(python3 -m pybind11 --cmakedir)
+cmake --build . --parallel
+cd ..
+python tests/test_capstone_core.py  # should show 19 passed
 ```
 
-This appends to `radiomap.json` automatically.
+**Windows (MSYS2 recommended)**
+```bash
+# Install MSYS2 from https://msys2.org, then in the MinGW 64-bit terminal:
+pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake
+# Add C:\msys64\mingw64\bin to your Windows PATH, then:
+cd Hybrid
+mkdir build && cd build
+cmake .. -Dpybind11_DIR=$(python -m pybind11 --cmakedir)
+cmake --build . --parallel
+```
 
-**2. Switch method**
+**Windows (VS 2022 Developer Command Prompt)**
+```bat
+cd Hybrid
+mkdir build && cd build
+cmake .. -G "Visual Studio 17 2022" -A x64 -Dpybind11_DIR=<output of: python -m pybind11 --cmakedir>
+cmake --build . --config Release
+```
 
-In `config.yaml`, set:
+---
 
+## RF Fingerprinting (optional, more accurate)
+
+Fingerprinting is more reliable than trilateration in cluttered environments.
+
+**1. Collect calibration samples** — Stand in a room with the target device and POST its RSSI snapshot. Aim for at least 10 samples per room:
+
+```bash
+curl -X POST http://localhost:8000/survey/Room101 \
+  -H "Content-Type: application/json" \
+  -d '{"AP1": -45.0, "AP2": -55.0, "AP3": -68.0}'
+```
+
+**2. Switch the method** in `Hybrid/config.yaml`:
 ```yaml
 system:
   localization_method: "fingerprinting"
 ```
 
-Then `POST /config/reload`.
+Then reload: `curl -X POST http://localhost:8000/config/reload`
 
 ---
 
-## Adding ESP32-C3 ToF Anchors
+## Hardware
 
-When the hardware is on-site, populate `tof_anchors` in `config.yaml`:
+| Device | Role | Connection |
+|---|---|---|
+| TP-Link EAP350 APs | RSSI source | Telnet on 192.168.1.0/24 |
+| ESP32-C3 boards | ToF + BLE ranging | MQTT |
+| NothingPhone | Tracked target | Detected via SSID/RSSI |
 
-```yaml
-tof_anchors:
-  ESP_1:
-    mac: "AA:BB:CC:DD:EE:01"
-    x: 2.0
-    y: 5.0
+AP IPs are configured in `Hybrid/config.yaml` under `wifi_aps`. The engine polls them on the same network.
+
+---
+
+## Troubleshooting
+
+**`psycopg2.OperationalError: connection refused`**
+PostgreSQL isn't running. Start it with `docker start ips-postgres` or `net start postgresql-x64-15`.
+
+**`ModuleNotFoundError: No module named 'webview'`**
+Run `pip install pywebview requests`.
+
+**`ModuleNotFoundError: No module named 'capstone_core'`**
+The C++ module hasn't been compiled. Either build it (see above) or use Docker.
+
+**`Port 8080/8000 already in use`**
+A previous server session is still running. Kill it:
+```bash
+# Windows
+netstat -ano | findstr :8080
+taskkill /PID <pid> /F
+
+# macOS/Linux
+lsof -ti:8080 | xargs kill
 ```
 
-Each ESP32-C3 must publish JSON to the MQTT topic `capstone/<mac>/tof`:
-
-```json
-{ "mac": "AA:BB:CC:DD:EE:01", "distance_m": 1.85, "ts": "2024-01-01T12:00:00Z" }
-```
-
-Configure the broker in `config.yaml` under `mqtt:` and restart the server.
+**Frontend shows "Engine offline"**
+The Hybrid engine (port 8000) isn't reachable. Check that `python src_python/app.py` is running and that `config.yaml` loaded without errors.
 
 ---
 
-## VS Code IntelliSense
+## OG System (original Python monolith)
 
-IntelliSense **requires a C++ compiler to be reachable** so it can locate system headers like `<string>`. Pick one of the three options below, then select the matching configuration.
-
-### Option 1 — MSYS2 / MinGW-w64 (easiest Windows install)
-
-1. Download and run the installer from **https://www.msys2.org**
-2. Open the **MSYS2 MinGW 64-bit** terminal and run:
-   ```bash
-   pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake
-   ```
-3. Add `C:\msys64\mingw64\bin` to your Windows **System PATH**
-   (`Settings → System → Advanced system settings → Environment Variables → Path → New`)
-4. Restart VS Code
-5. `Ctrl+Shift+P` → **C/C++: Select a Configuration** → **MSYS2 / MinGW-w64 (recommended on Windows)**
-
-### Option 2 — Dev Containers (zero local install, runs inside Docker)
-
-Requires **Docker Desktop** and the VS Code **Dev Containers** extension (`ms-vscode-remote.remote-containers`).
-
-1. Install Docker Desktop from **https://www.docker.com/products/docker-desktop**
-2. Install the **Dev Containers** extension in VS Code
-3. Open the Command Palette: `Ctrl+Shift+P` → **Dev Containers: Reopen in Container**
-
-VS Code reopens inside the Docker build image where `g++` and all system headers are already present. IntelliSense, build, and run all work without any local toolchain. The `builder` stage of `Hybrid/Dockerfile` is used.
-
-### Option 3 — WSL2 (if already installed)
-
-1. Open VS Code, install the **WSL** extension (`ms-vscode-remote.remote-wsl`)
-2. `Ctrl+Shift+P` → **WSL: Reopen Folder in WSL**
-3. Inside WSL, install build tools if not present:
-   ```bash
-   sudo apt update && sudo apt install -y build-essential cmake python3-pip
-   pip3 install pybind11
-   ```
-4. Select the **WSL2 (GCC inside Windows Subsystem for Linux)** configuration
-
-Include paths for project headers are pre-configured in `.vscode/c_cpp_properties.json` for all three options.
-
----
-
-## Running the OG (Pure Python) System
-
-The original monolith in `OG/` remains fully functional and is the stable fallback.
+The original system in `OG/` is fully functional and production-stable. Use it as a fallback if the Hybrid architecture has issues.
 
 ```bash
 cd OG
 pip install -r requirements.txt
 
-# Terminal 1 — API server
+# Terminal 1
 python api_server.py
 
-# Terminal 2 — Telemetry agent
+# Terminal 2
 python telemetry_agent.py
 ```
 
-The web UI is served at **http://localhost:8000** via the `index.html` in the same folder.
+Web UI is available at `http://localhost:8000` via `OG/index.html`.

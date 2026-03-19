@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>IPS Platform — Indoor Positioning System</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+    body { font-family: 'Inter', system-ui, sans-serif; }
+    code, .mono { font-family: 'JetBrains Mono', monospace; }
+    .fade-in { animation: fadeIn 0.2s ease-out; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+    .pulse-dot { animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+    svg text { user-select: none; }
+  </style>
+</head>
+<body class="bg-gray-50 text-gray-900 min-h-screen">
+  <div id="root"></div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "react": "https://esm.sh/react@18.3.1",
+      "react-dom/client": "https://esm.sh/react-dom@18.3.1/client"
+    }
+  }
+  </script>
+
+  <script type="module">
+import React from "react";
+import { createRoot } from "react-dom/client";
+const { useState, useEffect, useCallback, useRef, Fragment, createElement: h } = React;
+
+// Get backend URLs from Electron
+const PLATFORM_API = "http://localhost:8080/api/v1";
+const ENGINE_API = "http://localhost:8000";
+
+// Rest of your React app code (same as before)
+// ... [paste the entire React app code from index.html here]
+
+// For now, a simple loading screen while we set up
+createRoot(document.getElementById("root")).render(
+  h("div", { className: "flex items-center justify-center h-screen" },
+    h("div", { className: "text-center" },
+      h("div", { className: "text-4xl mb-4" }, "⚡"),
+      h("h1", { className: "text-3xl font-bold mb-2" }, "IPS Platform"),
+      h("p", { className: "text-gray-600 mb-6" }, "Loading Indoor Positioning System..."),
+      h("div", { className: "flex justify-center" },
+        h("div", { className: "w-8 h-8 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin" })
+      )
+    )
+  )
+);
+  </script>
+</body>
+</html>
