@@ -1,0 +1,2721 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>IPS Platform — Indoor Positioning System</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              ink: '#3d3929',
+              'ink-secondary': '#6b6456',
+              panel: '#faf9f5',
+              surface: '#f3f0e8',
+              'surface-dim': '#ebe7dd',
+              accent: '#ae5630',
+              'accent-dim': '#944a29',
+              'accent-light': '#ae563018',
+              success: '#2e7d5b',
+              warn: '#b8860b',
+              danger: '#c0392b',
+              muted: '#8b8579',
+              sidebar: '#2f2f2f',
+              'sidebar-hover': '#3a3a3a',
+              'sidebar-active': '#454545',
+              'sidebar-text': '#a3a3a3',
+              'sidebar-text-active': '#e8e8e8',
+              border: '#ddd8cc',
+              'border-dim': '#cec8ba',
+            },
+          },
+        },
+      };
+    </script>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Crimson+Pro:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+      body { font-family: 'Inter', system-ui, sans-serif; }
+      h1, h2, h3 { font-family: 'Crimson Pro', 'Georgia', serif; }
+      code, .mono { font-family: 'JetBrains Mono', monospace; }
+      .fade-in { animation: fadeIn 0.25s ease-out; }
+      @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+      .pulse-dot { animation: pulse 2s infinite; }
+      @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+      svg text { user-select: none; }
+      ::selection { background: #ae563040; }
+      input:focus, select:focus, textarea:focus { box-shadow: 0 0 0 2px #ae563030; }
+      ::-webkit-scrollbar { width: 6px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb { background: #cec8ba; border-radius: 3px; }
+      ::-webkit-scrollbar-thumb:hover { background: #b5ae9f; }
+    </style>
+  </head>
+  <body class="bg-surface text-ink min-h-screen antialiased">
+    <div id="root"></div>
+
+    <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+
+    <script>
+      const React = window.React;
+      const { createRoot } = window.ReactDOM;
+      const {
+        useState,
+        useEffect,
+        useCallback,
+        useRef,
+        useMemo,
+        createElement: h,
+        Fragment,
+      } = React;
+
+      // ─── CONFIG ──────────────────────────────────────────────────────────
+      const PLATFORM_API =
+        window.__IPS_PLATFORM_API || "http://localhost:8080/api/v1";
+      const ENGINE_API = window.__IPS_ENGINE_API || "http://localhost:8000";
+
+      // ─── API CLIENT ──────────────────────────────────────────────────────
+      async function api(base, path, opts = {}) {
+        const { method = "GET", body, params } = opts;
+        let url = `${base}${path}`;
+        if (params) {
+          const sp = new URLSearchParams();
+          Object.entries(params).forEach(([k, v]) => {
+            if (v != null) sp.set(k, String(v));
+          });
+          const qs = sp.toString();
+          if (qs) url += `?${qs}`;
+        }
+        const headers = {};
+        if (body) headers["Content-Type"] = "application/json";
+        const res = await fetch(url, {
+          method,
+          headers,
+          body: body ? JSON.stringify(body) : undefined,
+        });
+        if (res.status === 204) return null;
+        if (!res.ok) {
+          const text = await res.text().catch(() => "");
+          throw new Error(`${res.status} ${res.statusText}: ${text}`);
+        }
+        return res.json();
+      }
+
+      const platform = {
+        // Campuses
+        listCampuses: () => api(PLATFORM_API, "/campuses"),
+        createCampus: (d) =>
+          api(PLATFORM_API, "/campuses", { method: "POST", body: d }),
+        deleteCampus: (id) =>
+          api(PLATFORM_API, `/campuses/${id}`, { method: "DELETE" }),
+        // Buildings
+        listBuildings: (cid) => api(PLATFORM_API, `/campuses/${cid}/buildings`),
+        createBuilding: (cid, d) =>
+          api(PLATFORM_API, `/campuses/${cid}/buildings`, {
+            method: "POST",
+            body: d,
+          }),
+        deleteBuilding: (id) =>
+          api(PLATFORM_API, `/buildings/${id}`, { method: "DELETE" }),
+        // Floors
+        listFloors: (bid) => api(PLATFORM_API, `/buildings/${bid}/floors`),
+        createFloor: (bid, d) =>
+          api(PLATFORM_API, `/buildings/${bid}/floors`, {
+            method: "POST",
+            body: d,
+          }),
+        deleteFloor: (id) =>
+          api(PLATFORM_API, `/floors/${id}`, { method: "DELETE" }),
+        getFloor: (id) => api(PLATFORM_API, `/floors/${id}`),
+        // Rooms
+        listRooms: (fid) => api(PLATFORM_API, `/floors/${fid}/rooms`),
+        createRoom: (fid, d) =>
+          api(PLATFORM_API, `/floors/${fid}/rooms`, {
+            method: "POST",
+            body: d,
+          }),
+        deleteRoom: (id) =>
+          api(PLATFORM_API, `/rooms/${id}`, { method: "DELETE" }),
+        updateRoom: (id, d) =>
+          api(PLATFORM_API, `/rooms/${id}`, { method: "PATCH", body: d }),
+        // Anchors
+        listAnchors: (fid) => api(PLATFORM_API, `/floors/${fid}/anchors`),
+        listAllAnchors: (p) => api(PLATFORM_API, "/anchors", { params: p }),
+        createAnchor: (fid, d) =>
+          api(PLATFORM_API, `/floors/${fid}/anchors`, {
+            method: "POST",
+            body: d,
+          }),
+        deleteAnchor: (id) =>
+          api(PLATFORM_API, `/anchors/${id}`, { method: "DELETE" }),
+        updateAnchor: (id, d) =>
+          api(PLATFORM_API, `/anchors/${id}`, { method: "PATCH", body: d }),
+        // Tags
+        listTags: (p) => api(PLATFORM_API, "/tags", { params: p }),
+        createTag: (d) =>
+          api(PLATFORM_API, "/tags", { method: "POST", body: d }),
+        deleteTag: (id) =>
+          api(PLATFORM_API, `/tags/${id}`, { method: "DELETE" }),
+        updateTag: (id, d) =>
+          api(PLATFORM_API, `/tags/${id}`, { method: "PATCH", body: d }),
+        // Logs
+        listCrossings: (p) => api(PLATFORM_API, "/crossings", { params: p }),
+        listAlerts: (p) => api(PLATFORM_API, "/alerts", { params: p }),
+        ackAlert: (id, by) =>
+          api(PLATFORM_API, `/alerts/${id}/ack`, {
+            method: "POST",
+            body: { acknowledged_by: by },
+          }),
+        // Config / Engine
+        generateConfig: (p) =>
+          api(PLATFORM_API, "/config/generate", { method: "POST", params: p }),
+        startEngine: (p) =>
+          api(PLATFORM_API, "/engine/start", { method: "POST", params: p }),
+        stopEngine: () => api(PLATFORM_API, "/engine/stop", { method: "POST" }),
+        engineStatus: () => api(PLATFORM_API, "/engine/status"),
+      };
+
+      const engine = {
+        health: () => api(ENGINE_API, "/health"),
+        status: () => api(ENGINE_API, "/status"),
+        map: () => api(ENGINE_API, "/map"),
+        devices: () => api(ENGINE_API, "/devices"),
+        decisions: (limit) =>
+          api(ENGINE_API, "/decisions", { params: { limit } }),
+        raw: () => api(ENGINE_API, "/raw"),
+        logs: (p) => api(ENGINE_API, "/logs", { params: p }),
+      };
+
+      // ─── SHARED COMPONENTS ───────────────────────────────────────────────
+
+      function Badge({ color = "gray", children }) {
+        const colors = {
+          green: "bg-emerald-50 text-emerald-800 border border-emerald-200",
+          red: "bg-red-50 text-red-800 border border-red-200",
+          yellow: "bg-amber-50 text-amber-800 border border-amber-200",
+          blue: "bg-sky-50 text-sky-800 border border-sky-200",
+          gray: "bg-surface-dim text-ink-secondary border border-border",
+          purple: "bg-violet-50 text-violet-800 border border-violet-200",
+        };
+        return h(
+          "span",
+          {
+            className: `inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${colors[color] || colors.gray}`,
+          },
+          children,
+        );
+      }
+
+      function Button({
+        variant = "primary",
+        size = "md",
+        disabled,
+        onClick,
+        children,
+        className = "",
+      }) {
+        const base =
+          "inline-flex items-center justify-center font-medium rounded-md transition-all duration-150 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-accent disabled:opacity-40 disabled:cursor-not-allowed";
+        const variants = {
+          primary: "bg-accent text-white hover:bg-accent-dim shadow-sm",
+          secondary: "bg-surface-dim text-ink border border-border hover:bg-panel",
+          danger: "bg-red-50 text-danger border border-red-200 hover:bg-red-100",
+          ghost: "text-ink-secondary hover:bg-surface-dim hover:text-ink",
+        };
+        const sizes = {
+          sm: "px-2.5 py-1 text-xs",
+          md: "px-4 py-2 text-sm",
+          lg: "px-5 py-2.5 text-sm",
+        };
+        return h(
+          "button",
+          {
+            className: `${base} ${variants[variant]} ${sizes[size]} ${className}`,
+            disabled,
+            onClick,
+          },
+          children,
+        );
+      }
+
+      function Input({
+        label,
+        type = "text",
+        value,
+        onChange,
+        placeholder,
+        required,
+        className = "",
+        ...rest
+      }) {
+        return h(
+          "div",
+          { className: `${className}` },
+          label &&
+            h(
+              "label",
+              { className: "block text-xs font-medium text-ink-secondary mb-1.5 uppercase tracking-wide" },
+              label,
+            ),
+          h("input", {
+            type,
+            value,
+            onChange: (e) => onChange(e.target.value),
+            placeholder,
+            required,
+            className:
+              "w-full px-3 py-2 bg-panel border border-border rounded-md text-sm text-ink placeholder-muted focus:border-accent outline-none transition",
+            ...rest,
+          }),
+        );
+      }
+
+      function Select({ label, value, onChange, options, className = "" }) {
+        return h(
+          "div",
+          { className },
+          label &&
+            h(
+              "label",
+              { className: "block text-sm font-medium text-gray-700 mb-1" },
+              label,
+            ),
+          h(
+            "select",
+            {
+              value,
+              onChange: (e) => onChange(e.target.value),
+              className:
+                "w-full px-3 py-2 bg-panel border border-border rounded-md text-sm text-ink focus:border-accent outline-none transition",
+            },
+            options.map((o) =>
+              h("option", { key: o.value, value: o.value }, o.label),
+            ),
+          ),
+        );
+      }
+
+      function Card({ title, actions, children, className = "" }) {
+        return h(
+          "div",
+          {
+            className: `bg-panel rounded-lg border border-border ${className}`,
+          },
+          (title || actions) &&
+            h(
+              "div",
+              {
+                className:
+                  "flex items-center justify-between px-5 py-3.5 border-b border-border",
+              },
+              title &&
+                h("h3", { className: "text-lg font-semibold text-ink" }, title),
+              actions &&
+                h("div", { className: "flex items-center gap-2" }, actions),
+            ),
+          h("div", { className: "p-5" }, children),
+        );
+      }
+
+      function EmptyState({ icon = "\uD83D\uDCED", title, description, action }) {
+        return h(
+          "div",
+          { className: "text-center py-14" },
+          h("div", { className: "text-3xl mb-3 opacity-60" }, icon),
+          h("h3", { className: "font-medium text-ink mb-1" }, title),
+          description &&
+            h("p", { className: "text-sm text-muted mb-4 max-w-xs mx-auto" }, description),
+          action,
+        );
+      }
+
+      function LoadingSpinner() {
+        return h(
+          "div",
+          { className: "flex items-center justify-center py-12" },
+          h("div", {
+            className:
+              "w-7 h-7 border-2 border-accent border-t-transparent rounded-full animate-spin",
+          }),
+        );
+      }
+
+      function ErrorBanner({ message, onRetry }) {
+        return h(
+          "div",
+          {
+            className:
+              "bg-red-50 border border-red-200 rounded-md p-4 flex items-center justify-between",
+          },
+          h(
+            "div",
+            { className: "flex items-center gap-2" },
+            h("span", { className: "text-danger" }, "\u26A0"),
+            h("span", { className: "text-sm text-danger" }, message),
+          ),
+          onRetry &&
+            h(
+              Button,
+              { variant: "ghost", size: "sm", onClick: onRetry },
+              "Retry",
+            ),
+        );
+      }
+
+      function StatusDot({ status }) {
+        const color =
+          status === "online"
+            ? "bg-emerald-400"
+            : status === "polling"
+              ? "bg-amber-400 pulse-dot"
+              : "bg-gray-300";
+        return h("span", {
+          className: `inline-block w-2 h-2 rounded-full ${color}`,
+        });
+      }
+
+      // ─── HOOKS ───────────────────────────────────────────────────────────
+
+      function useApi(fn, deps = []) {
+        const [data, setData] = useState(null);
+        const [loading, setLoading] = useState(true);
+        const [error, setError] = useState(null);
+        const reload = useCallback(async () => {
+          setLoading(true);
+          setError(null);
+          try {
+            setData(await fn());
+          } catch (e) {
+            setError(e.message);
+          } finally {
+            setLoading(false);
+          }
+        }, deps);
+        useEffect(() => {
+          reload();
+        }, [reload]);
+        return { data, loading, error, reload };
+      }
+
+      function usePolling(fn, intervalMs, deps = []) {
+        const [data, setData] = useState(null);
+        const [error, setError] = useState(null);
+        useEffect(() => {
+          let active = true;
+          const tick = async () => {
+            try {
+              const d = await fn();
+              if (active) {
+                setData(d);
+                setError(null);
+              }
+            } catch (e) {
+              if (active) setError(e.message);
+            }
+          };
+          tick();
+          const id = setInterval(tick, intervalMs);
+          return () => {
+            active = false;
+            clearInterval(id);
+          };
+        }, deps);
+        return { data, error };
+      }
+
+      // ─── NAV / LAYOUT ────────────────────────────────────────────────────
+
+      const PAGES = [
+        { id: "wizard", label: "Setup", icon: "\u2699\uFE0F" },
+        { id: "map", label: "Map", icon: "\uD83D\uDDFA\uFE0F" },
+        { id: "devices", label: "Devices", icon: "\uD83D\uDCE1" },
+        { id: "logs", label: "Logs", icon: "\uD83D\uDCCB" },
+      ];
+
+      function Sidebar({ page, setPage, engineHealth }) {
+        return h(
+          "aside",
+          {
+            className:
+              "w-60 bg-sidebar flex flex-col h-screen fixed left-0 top-0 z-10",
+          },
+          // Header
+          h(
+            "div",
+            { className: "px-5 py-5" },
+            h(
+              "div",
+              { className: "text-sidebar-text-active text-lg font-semibold tracking-tight", style: { fontFamily: "'Crimson Pro', Georgia, serif" } },
+              "IPS Platform",
+            ),
+            h(
+              "div",
+              { className: "text-xs text-sidebar-text mt-0.5 tracking-wide" },
+              "Indoor Positioning",
+            ),
+          ),
+          // Nav
+          h(
+            "nav",
+            { className: "flex-1 px-3 py-2 space-y-0.5" },
+            PAGES.map((p) =>
+              h(
+                "button",
+                {
+                  key: p.id,
+                  onClick: () => setPage(p.id),
+                  className: `w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm transition-all duration-150 ${
+                    page === p.id
+                      ? "bg-sidebar-active text-sidebar-text-active font-medium"
+                      : "text-sidebar-text hover:bg-sidebar-hover hover:text-sidebar-text-active"
+                  }`,
+                },
+                h("span", { className: "text-base" }, p.icon),
+                p.label,
+              ),
+            ),
+          ),
+          // Engine status
+          h(
+            "div",
+            { className: "px-5 py-4 border-t border-white/10" },
+            h(
+              "div",
+              { className: "flex items-center gap-2 text-xs" },
+              h(StatusDot, { status: engineHealth?.ok ? "online" : "offline" }),
+              h(
+                "span",
+                { className: "text-sidebar-text" },
+                engineHealth?.ok ? "Engine online" : "Engine offline",
+              ),
+            ),
+            engineHealth?.poll_running &&
+              h(
+                "div",
+                { className: "flex items-center gap-2 text-xs mt-1.5" },
+                h(StatusDot, { status: "polling" }),
+                h("span", { className: "text-sidebar-text" }, "Polling active"),
+              ),
+          ),
+        );
+      }
+
+      function Layout({ page, setPage, engineHealth, children }) {
+        return h(
+          "div",
+          { className: "flex" },
+          h(Sidebar, { page, setPage, engineHealth }),
+          h(
+            "main",
+            { className: "flex-1 ml-60 min-h-screen bg-surface" },
+            h("div", { className: "max-w-6xl mx-auto px-8 py-8" }, children),
+          ),
+        );
+      }
+
+      // ═════════════════════════════════════════════════════════════════════
+      // PAGE: SETUP WIZARD
+      // ═════════════════════════════════════════════════════════════════════
+
+      const WIZARD_STEPS = ["Campus", "Building", "Floor", "Rooms", "Anchors"];
+
+      function SetupWizard() {
+        const [step, setStep] = useState(0);
+        const [selectedCampus, setSelectedCampus] = useState(null);
+        const [selectedBuilding, setSelectedBuilding] = useState(null);
+        const [selectedFloor, setSelectedFloor] = useState(null);
+
+        return h(
+          "div",
+          { className: "fade-in" },
+          h(
+            "div",
+            { className: "mb-6" },
+            h("h1", { className: "text-2xl font-semibold text-ink" }, "Setup Wizard"),
+            h(
+              "p",
+              { className: "text-muted text-sm mt-1" },
+              "Configure your indoor positioning hierarchy",
+            ),
+          ),
+          // Stepper
+          h(
+            "div",
+            { className: "flex items-center gap-1 mb-8" },
+            WIZARD_STEPS.map((s, i) =>
+              h(
+                Fragment,
+                { key: s },
+                h(
+                  "button",
+                  {
+                    onClick: () => {
+                      if (i <= step) setStep(i);
+                    },
+                    className: `flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-150 ${
+                      i === step
+                        ? "bg-accent text-white shadow-sm"
+                        : i < step
+                          ? "bg-accent-light text-accent cursor-pointer border border-accent/20"
+                          : "bg-surface-dim text-muted"
+                    }`,
+                  },
+                  h(
+                    "span",
+                    {
+                      className:
+                        "w-5 h-5 rounded-full bg-white/20 flex items-center justify-center text-xs",
+                    },
+                    i < step ? "\u2713" : i + 1,
+                  ),
+                  s,
+                ),
+                i < WIZARD_STEPS.length - 1 &&
+                  h("div", {
+                    className: `flex-1 h-px max-w-8 ${i < step ? "bg-emerald-300" : "bg-gray-200"}`,
+                  }),
+              ),
+            ),
+          ),
+          // Step content
+          step === 0 &&
+            h(WizardCampus, {
+              onSelect: (c) => {
+                setSelectedCampus(c);
+                setStep(1);
+              },
+            }),
+          step === 1 &&
+            h(WizardBuilding, {
+              campus: selectedCampus,
+              onSelect: (b) => {
+                setSelectedBuilding(b);
+                setStep(2);
+              },
+              onBack: () => setStep(0),
+            }),
+          step === 2 &&
+            h(WizardFloor, {
+              building: selectedBuilding,
+              onSelect: (f) => {
+                setSelectedFloor(f);
+                setStep(3);
+              },
+              onBack: () => setStep(1),
+            }),
+          step === 3 &&
+            h(WizardRooms, {
+              floor: selectedFloor,
+              onNext: () => setStep(4),
+              onBack: () => setStep(2),
+            }),
+          step === 4 &&
+            h(WizardAnchors, {
+              floor: selectedFloor,
+              onBack: () => setStep(3),
+            }),
+        );
+      }
+
+      function WizardCampus({ onSelect }) {
+        const { data, loading, error, reload } = useApi(() =>
+          platform.listCampuses(),
+        );
+        const [name, setName] = useState("");
+        const [desc, setDesc] = useState("");
+        const [creating, setCreating] = useState(false);
+
+        const handleCreate = async () => {
+          if (!name.trim()) return;
+          setCreating(true);
+          try {
+            await platform.createCampus({
+              name: name.trim(),
+              description: desc,
+            });
+            setName("");
+            setDesc("");
+            reload();
+          } catch (e) {
+            alert(e.message);
+          } finally {
+            setCreating(false);
+          }
+        };
+
+        if (loading) return h(LoadingSpinner);
+        if (error) return h(ErrorBanner, { message: error, onRetry: reload });
+
+        return h(
+          "div",
+          { className: "grid grid-cols-1 lg:grid-cols-2 gap-6 fade-in" },
+          // Create form
+          h(
+            Card,
+            { title: "Create Campus" },
+            h(
+              "div",
+              { className: "space-y-3" },
+              h(Input, {
+                label: "Campus Name",
+                value: name,
+                onChange: setName,
+                placeholder: "e.g. Carleton University",
+                required: true,
+              }),
+              h(Input, {
+                label: "Description",
+                value: desc,
+                onChange: setDesc,
+                placeholder: "Optional description",
+              }),
+              h(
+                Button,
+                { onClick: handleCreate, disabled: creating || !name.trim() },
+                creating ? "Creating..." : "Create Campus",
+              ),
+            ),
+          ),
+          // Existing list
+          h(
+            Card,
+            { title: "Existing Campuses" },
+            data?.length === 0
+              ? h(EmptyState, {
+                  icon: "\uD83C\uDFEB",
+                  title: "No campuses yet",
+                  description: "Create your first campus to get started",
+                })
+              : h(
+                  "div",
+                  { className: "space-y-2" },
+                  data?.map((c) =>
+                    h(
+                      "button",
+                      {
+                        key: c.id,
+                        onClick: () => onSelect(c),
+                        className:
+                          "w-full flex items-center justify-between p-3 rounded-lg border border-border hover:border-accent hover:bg-accent-light transition-all duration-150 text-left group",
+                      },
+                      h(
+                        "div",
+                        null,
+                        h("div", { className: "font-medium text-sm" }, c.name),
+                        c.description &&
+                          h(
+                            "div",
+                            { className: "text-xs text-muted mt-0.5" },
+                            c.description,
+                          ),
+                      ),
+                      h(
+                        "span",
+                        {
+                          className:
+                            "text-muted group-hover:text-accent transition-colors",
+                        },
+                        "\u2192",
+                      ),
+                    ),
+                  ),
+                ),
+          ),
+        );
+      }
+
+      function WizardBuilding({ campus, onSelect, onBack }) {
+        const { data, loading, error, reload } = useApi(
+          () => platform.listBuildings(campus.id),
+          [campus.id],
+        );
+        const [name, setName] = useState("");
+        const [creating, setCreating] = useState(false);
+
+        const handleCreate = async () => {
+          if (!name.trim()) return;
+          setCreating(true);
+          try {
+            await platform.createBuilding(campus.id, { name: name.trim() });
+            setName("");
+            reload();
+          } catch (e) {
+            alert(e.message);
+          } finally {
+            setCreating(false);
+          }
+        };
+
+        if (loading) return h(LoadingSpinner);
+        if (error) return h(ErrorBanner, { message: error, onRetry: reload });
+
+        return h(
+          "div",
+          { className: "fade-in" },
+          h(
+            "button",
+            {
+              onClick: onBack,
+              className:
+                "flex items-center gap-1 text-sm text-muted hover:text-accent mb-4",
+            },
+            "\u2190 Back to Campuses",
+          ),
+          h(
+            "div",
+            { className: "text-sm text-muted mb-4" },
+            `Campus: ${campus.name}`,
+          ),
+          h(
+            "div",
+            { className: "grid grid-cols-1 lg:grid-cols-2 gap-6" },
+            h(
+              Card,
+              { title: "Add Building" },
+              h(
+                "div",
+                { className: "flex gap-3" },
+                h(Input, {
+                  label: "Building Name",
+                  value: name,
+                  onChange: setName,
+                  placeholder: "e.g. Canal Building",
+                  className: "flex-1",
+                }),
+                h(
+                  "div",
+                  { className: "flex items-end" },
+                  h(
+                    Button,
+                    {
+                      onClick: handleCreate,
+                      disabled: creating || !name.trim(),
+                    },
+                    "Add",
+                  ),
+                ),
+              ),
+            ),
+            h(
+              Card,
+              { title: "Buildings" },
+              data?.length === 0
+                ? h(EmptyState, {
+                    icon: "\uD83C\uDFE2",
+                    title: "No buildings yet",
+                  })
+                : h(
+                    "div",
+                    { className: "space-y-2" },
+                    data?.map((b) =>
+                      h(
+                        "button",
+                        {
+                          key: b.id,
+                          onClick: () => onSelect(b),
+                          className:
+                            "w-full flex items-center justify-between p-3 rounded-lg border border-border hover:border-accent hover:bg-accent-light transition-all duration-150 text-left group",
+                        },
+                        h("div", { className: "font-medium text-sm" }, b.name),
+                        h(
+                          "span",
+                          {
+                            className: "text-muted group-hover:text-accent",
+                          },
+                          "\u2192",
+                        ),
+                      ),
+                    ),
+                  ),
+            ),
+          ),
+        );
+      }
+
+      function WizardFloor({ building, onSelect, onBack }) {
+        const { data, loading, error, reload } = useApi(
+          () => platform.listFloors(building.id),
+          [building.id],
+        );
+        const [form, setForm] = useState({
+          name: "",
+          floor_number: 1,
+          width_m: 20,
+          height_m: 15,
+        });
+        const [creating, setCreating] = useState(false);
+
+        const handleCreate = async () => {
+          if (!form.name.trim()) return;
+          setCreating(true);
+          try {
+            await platform.createFloor(building.id, {
+              ...form,
+              name: form.name.trim(),
+              floor_number: +form.floor_number,
+              width_m: +form.width_m,
+              height_m: +form.height_m,
+            });
+            setForm({
+              name: "",
+              floor_number: (data?.length || 0) + 2,
+              width_m: 20,
+              height_m: 15,
+            });
+            reload();
+          } catch (e) {
+            alert(e.message);
+          } finally {
+            setCreating(false);
+          }
+        };
+
+        if (loading) return h(LoadingSpinner);
+        if (error) return h(ErrorBanner, { message: error, onRetry: reload });
+
+        return h(
+          "div",
+          { className: "fade-in" },
+          h(
+            "button",
+            {
+              onClick: onBack,
+              className:
+                "flex items-center gap-1 text-sm text-muted hover:text-accent mb-4",
+            },
+            "\u2190 Back to Buildings",
+          ),
+          h(
+            "div",
+            { className: "text-sm text-muted mb-4" },
+            `Building: ${building.name}`,
+          ),
+          h(
+            "div",
+            { className: "grid grid-cols-1 lg:grid-cols-2 gap-6" },
+            h(
+              Card,
+              { title: "Add Floor" },
+              h(
+                "div",
+                { className: "space-y-3" },
+                h(
+                  "div",
+                  { className: "grid grid-cols-2 gap-3" },
+                  h(Input, {
+                    label: "Floor Name",
+                    value: form.name,
+                    onChange: (v) => setForm((f) => ({ ...f, name: v })),
+                    placeholder: "e.g. Floor 1",
+                  }),
+                  h(Input, {
+                    label: "Floor Number",
+                    type: "number",
+                    value: form.floor_number,
+                    onChange: (v) =>
+                      setForm((f) => ({ ...f, floor_number: v })),
+                  }),
+                ),
+                h(
+                  "div",
+                  { className: "grid grid-cols-2 gap-3" },
+                  h(Input, {
+                    label: "Width (m)",
+                    type: "number",
+                    value: form.width_m,
+                    onChange: (v) => setForm((f) => ({ ...f, width_m: v })),
+                  }),
+                  h(Input, {
+                    label: "Height (m)",
+                    type: "number",
+                    value: form.height_m,
+                    onChange: (v) => setForm((f) => ({ ...f, height_m: v })),
+                  }),
+                ),
+                h(
+                  Button,
+                  {
+                    onClick: handleCreate,
+                    disabled: creating || !form.name.trim(),
+                  },
+                  "Add Floor",
+                ),
+              ),
+            ),
+            h(
+              Card,
+              { title: "Floors" },
+              data?.length === 0
+                ? h(EmptyState, {
+                    icon: "\uD83C\uDFE5",
+                    title: "No floors yet",
+                  })
+                : h(
+                    "div",
+                    { className: "space-y-2" },
+                    data?.map((f) =>
+                      h(
+                        "button",
+                        {
+                          key: f.id,
+                          onClick: () => onSelect(f),
+                          className:
+                            "w-full flex items-center justify-between p-3 rounded-lg border border-border hover:border-accent hover:bg-accent-light transition-all duration-150 text-left group",
+                        },
+                        h(
+                          "div",
+                          null,
+                          h(
+                            "div",
+                            { className: "font-medium text-sm" },
+                            f.name,
+                          ),
+                          h(
+                            "div",
+                            { className: "text-xs text-muted" },
+                            `${f.width_m}m \u00D7 ${f.height_m}m  \u00B7  Floor ${f.floor_number}`,
+                          ),
+                        ),
+                        h(
+                          "span",
+                          {
+                            className: "text-muted group-hover:text-accent",
+                          },
+                          "\u2192",
+                        ),
+                      ),
+                    ),
+                  ),
+            ),
+          ),
+        );
+      }
+
+      function WizardRooms({ floor, onNext, onBack }) {
+        const { data, loading, error, reload } = useApi(
+          () => platform.listRooms(floor.id),
+          [floor.id],
+        );
+        const [form, setForm] = useState({
+          name: "",
+          priority_label: "Standard",
+          localization_type: "rssi_section",
+          alert_on_exit: false,
+          polygon: "",
+        });
+        const [creating, setCreating] = useState(false);
+
+        const handleCreate = async () => {
+          if (!form.name.trim()) return;
+          setCreating(true);
+          try {
+            let polygon = [];
+            if (form.polygon.trim()) {
+              try {
+                polygon = JSON.parse(form.polygon);
+              } catch {
+                alert(
+                  "Invalid polygon JSON. Use format: [[x1,y1],[x2,y2],...]",
+                );
+                return;
+              }
+            }
+            await platform.createRoom(floor.id, {
+              ...form,
+              name: form.name.trim(),
+              polygon,
+              alert_on_exit: form.alert_on_exit,
+            });
+            setForm({
+              name: "",
+              priority_label: "Standard",
+              localization_type: "rssi_section",
+              alert_on_exit: false,
+              polygon: "",
+            });
+            reload();
+          } catch (e) {
+            alert(e.message);
+          } finally {
+            setCreating(false);
+          }
+        };
+
+        if (loading) return h(LoadingSpinner);
+        if (error) return h(ErrorBanner, { message: error, onRetry: reload });
+
+        return h(
+          "div",
+          { className: "fade-in" },
+          h(
+            "button",
+            {
+              onClick: onBack,
+              className:
+                "flex items-center gap-1 text-sm text-muted hover:text-accent mb-4",
+            },
+            "\u2190 Back to Floors",
+          ),
+          h(
+            "div",
+            { className: "flex items-center justify-between mb-4" },
+            h(
+              "div",
+              { className: "text-sm text-muted" },
+              `Floor: ${floor.name} (${floor.width_m}m \u00D7 ${floor.height_m}m)`,
+            ),
+            h(
+              Button,
+              { onClick: onNext, variant: "primary" },
+              `Next: Anchors \u2192`,
+            ),
+          ),
+          h(
+            "div",
+            { className: "grid grid-cols-1 lg:grid-cols-2 gap-6" },
+            h(
+              Card,
+              { title: "Add Room" },
+              h(
+                "div",
+                { className: "space-y-3" },
+                h(Input, {
+                  label: "Room Name",
+                  value: form.name,
+                  onChange: (v) => setForm((f) => ({ ...f, name: v })),
+                  placeholder: "e.g. Room 101",
+                }),
+                h(
+                  "div",
+                  { className: "grid grid-cols-2 gap-3" },
+                  h(Select, {
+                    label: "Priority",
+                    value: form.priority_label,
+                    onChange: (v) =>
+                      setForm((f) => ({ ...f, priority_label: v })),
+                    options: [
+                      { value: "Standard", label: "Standard" },
+                      { value: "High", label: "High" },
+                      { value: "Critical", label: "Critical" },
+                    ],
+                  }),
+                  h(Select, {
+                    label: "Localization",
+                    value: form.localization_type,
+                    onChange: (v) =>
+                      setForm((f) => ({ ...f, localization_type: v })),
+                    options: [
+                      { value: "rssi_section", label: "RSSI Section" },
+                      { value: "high_accuracy", label: "High Accuracy" },
+                    ],
+                  }),
+                ),
+                h(
+                  "div",
+                  null,
+                  h(
+                    "label",
+                    {
+                      className: "block text-sm font-medium text-gray-700 mb-1",
+                    },
+                    "Polygon (JSON)",
+                  ),
+                  h("textarea", {
+                    value: form.polygon,
+                    onChange: (e) =>
+                      setForm((f) => ({ ...f, polygon: e.target.value })),
+                    placeholder: "[[0,0],[12,0],[12,8],[0,8]]",
+                    rows: 2,
+                    className:
+                      "w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:ring-2 focus:ring-accent focus:border-accent outline-none",
+                  }),
+                ),
+                h(
+                  "label",
+                  { className: "flex items-center gap-2 text-sm" },
+                  h("input", {
+                    type: "checkbox",
+                    checked: form.alert_on_exit,
+                    onChange: (e) =>
+                      setForm((f) => ({
+                        ...f,
+                        alert_on_exit: e.target.checked,
+                      })),
+                    className: "rounded",
+                  }),
+                  "Alert on exit",
+                ),
+                h(
+                  Button,
+                  {
+                    onClick: handleCreate,
+                    disabled: creating || !form.name.trim(),
+                  },
+                  "Add Room",
+                ),
+              ),
+            ),
+            h(
+              Card,
+              { title: `Rooms (${data?.length || 0})` },
+              data?.length === 0
+                ? h(EmptyState, {
+                    icon: "\uD83D\uDEAA",
+                    title: "No rooms yet",
+                    description: "Define room boundaries with polygons",
+                  })
+                : h(
+                    "div",
+                    { className: "space-y-2" },
+                    data?.map((r) =>
+                      h(
+                        "div",
+                        {
+                          key: r.id,
+                          className:
+                            "p-3 rounded-lg border border-border text-sm",
+                        },
+                        h(
+                          "div",
+                          { className: "flex items-center justify-between" },
+                          h("span", { className: "font-medium" }, r.name),
+                          h(
+                            "div",
+                            { className: "flex items-center gap-2" },
+                            h(
+                              Badge,
+                              {
+                                color:
+                                  r.priority_label === "High" ||
+                                  r.priority_label === "Critical"
+                                    ? "red"
+                                    : "gray",
+                              },
+                              r.priority_label,
+                            ),
+                            r.alert_on_exit &&
+                              h(Badge, { color: "yellow" }, "Alert"),
+                          ),
+                        ),
+                        r.polygon?.length > 0 &&
+                          h(
+                            "div",
+                            { className: "text-xs text-muted mt-1 font-mono" },
+                            `${r.polygon.length} vertices`,
+                          ),
+                      ),
+                    ),
+                  ),
+            ),
+          ),
+        );
+      }
+
+      function WizardAnchors({ floor, onBack }) {
+        const { data, loading, error, reload } = useApi(
+          () => platform.listAnchors(floor.id),
+          [floor.id],
+        );
+        const [form, setForm] = useState({
+          anchor_id: "",
+          anchor_type: "engenius_ap",
+          ip_address: "",
+          mac_address: "",
+          x_m: 0,
+          y_m: 0,
+          username: "admin",
+          password: "admin",
+        });
+        const [creating, setCreating] = useState(false);
+
+        const handleCreate = async () => {
+          if (!form.anchor_id.trim()) return;
+          setCreating(true);
+          try {
+            await platform.createAnchor(floor.id, {
+              ...form,
+              anchor_id: form.anchor_id.trim(),
+              x_m: +form.x_m,
+              y_m: +form.y_m,
+            });
+            setForm((f) => ({
+              ...f,
+              anchor_id: "",
+              ip_address: "",
+              mac_address: "",
+              x_m: 0,
+              y_m: 0,
+            }));
+            reload();
+          } catch (e) {
+            alert(e.message);
+          } finally {
+            setCreating(false);
+          }
+        };
+
+        if (loading) return h(LoadingSpinner);
+        if (error) return h(ErrorBanner, { message: error, onRetry: reload });
+
+        return h(
+          "div",
+          { className: "fade-in" },
+          h(
+            "button",
+            {
+              onClick: onBack,
+              className:
+                "flex items-center gap-1 text-sm text-muted hover:text-accent mb-4",
+            },
+            "\u2190 Back to Rooms",
+          ),
+          h(
+            "div",
+            { className: "flex items-center justify-between mb-4" },
+            h(
+              "div",
+              { className: "text-sm text-muted" },
+              `Floor: ${floor.name}`,
+            ),
+            h(Badge, { color: "green" }, `${data?.length || 0} anchors placed`),
+          ),
+          h(
+            "div",
+            { className: "grid grid-cols-1 lg:grid-cols-2 gap-6" },
+            h(
+              Card,
+              { title: "Place Anchor" },
+              h(
+                "div",
+                { className: "space-y-3" },
+                h(
+                  "div",
+                  { className: "grid grid-cols-2 gap-3" },
+                  h(Input, {
+                    label: "Anchor ID",
+                    value: form.anchor_id,
+                    onChange: (v) => setForm((f) => ({ ...f, anchor_id: v })),
+                    placeholder: "e.g. AP1",
+                  }),
+                  h(Select, {
+                    label: "Type",
+                    value: form.anchor_type,
+                    onChange: (v) => setForm((f) => ({ ...f, anchor_type: v })),
+                    options: [
+                      { value: "engenius_ap", label: "EnGenius AP" },
+                      { value: "esp32", label: "ESP32" },
+                    ],
+                  }),
+                ),
+                form.anchor_type === "engenius_ap" &&
+                  h(
+                    "div",
+                    { className: "grid grid-cols-2 gap-3" },
+                    h(Input, {
+                      label: "IP Address",
+                      value: form.ip_address,
+                      onChange: (v) =>
+                        setForm((f) => ({ ...f, ip_address: v })),
+                      placeholder: "192.168.1.xxx",
+                    }),
+                    h(Input, {
+                      label: "MAC Address",
+                      value: form.mac_address,
+                      onChange: (v) =>
+                        setForm((f) => ({ ...f, mac_address: v })),
+                      placeholder: "AA:BB:CC:DD:EE:FF",
+                    }),
+                  ),
+                form.anchor_type === "esp32" &&
+                  h(Input, {
+                    label: "MAC Address",
+                    value: form.mac_address,
+                    onChange: (v) => setForm((f) => ({ ...f, mac_address: v })),
+                    placeholder: "AA:BB:CC:DD:EE:FF",
+                  }),
+                h(
+                  "div",
+                  { className: "grid grid-cols-2 gap-3" },
+                  h(Input, {
+                    label: "X Position (m)",
+                    type: "number",
+                    value: form.x_m,
+                    onChange: (v) => setForm((f) => ({ ...f, x_m: v })),
+                  }),
+                  h(Input, {
+                    label: "Y Position (m)",
+                    type: "number",
+                    value: form.y_m,
+                    onChange: (v) => setForm((f) => ({ ...f, y_m: v })),
+                  }),
+                ),
+                form.anchor_type === "engenius_ap" &&
+                  h(
+                    "div",
+                    { className: "grid grid-cols-2 gap-3" },
+                    h(Input, {
+                      label: "Username",
+                      value: form.username,
+                      onChange: (v) => setForm((f) => ({ ...f, username: v })),
+                    }),
+                    h(Input, {
+                      label: "Password",
+                      type: "password",
+                      value: form.password,
+                      onChange: (v) => setForm((f) => ({ ...f, password: v })),
+                    }),
+                  ),
+                h(
+                  Button,
+                  {
+                    onClick: handleCreate,
+                    disabled: creating || !form.anchor_id.trim(),
+                  },
+                  "Place Anchor",
+                ),
+              ),
+            ),
+            h(
+              Card,
+              { title: "Placed Anchors" },
+              data?.length === 0
+                ? h(EmptyState, {
+                    icon: "\uD83D\uDCE1",
+                    title: "No anchors placed yet",
+                  })
+                : h(
+                    "div",
+                    { className: "space-y-2" },
+                    data?.map((a) =>
+                      h(
+                        "div",
+                        {
+                          key: a.id,
+                          className:
+                            "p-3 rounded-lg border border-border text-sm flex items-center justify-between",
+                        },
+                        h(
+                          "div",
+                          null,
+                          h(
+                            "div",
+                            { className: "flex items-center gap-2" },
+                            h(StatusDot, { status: a.status }),
+                            h(
+                              "span",
+                              { className: "font-medium font-mono" },
+                              a.anchor_id,
+                            ),
+                            h(
+                              Badge,
+                              {
+                                color:
+                                  a.anchor_type === "esp32" ? "purple" : "blue",
+                              },
+                              a.anchor_type,
+                            ),
+                          ),
+                          h(
+                            "div",
+                            { className: "text-xs text-muted mt-0.5" },
+                            `(${a.x_m}, ${a.y_m})m`,
+                            a.ip_address ? ` \u00B7 ${a.ip_address}` : "",
+                            a.mac_address ? ` \u00B7 ${a.mac_address}` : "",
+                          ),
+                        ),
+                        h(
+                          "span",
+                          {
+                            className: `text-xs ${a.enabled ? "text-emerald-600" : "text-gray-400"}`,
+                          },
+                          a.enabled ? "Enabled" : "Disabled",
+                        ),
+                      ),
+                    ),
+                  ),
+            ),
+          ),
+          // Mini floor preview with anchors
+          data?.length > 0 &&
+            h(
+              Card,
+              { title: "Anchor Placement Preview", className: "mt-6" },
+              h(FloorCanvas, {
+                width: floor.width_m,
+                height: floor.height_m,
+                rooms: [],
+                anchors: data,
+                devices: [],
+                className: "w-full",
+              }),
+            ),
+        );
+      }
+
+      // ═════════════════════════════════════════════════════════════════════
+      // PAGE: MAP VIEW
+      // ═════════════════════════════════════════════════════════════════════
+
+      function FloorCanvas({
+        width,
+        height,
+        rooms = [],
+        anchors = [],
+        devices = [],
+        className = "",
+      }) {
+        const PADDING = 40;
+        const svgRef = useRef(null);
+        const [dims, setDims] = useState({ w: 800, h: 600 });
+
+        useEffect(() => {
+          const ro = new ResizeObserver((entries) => {
+            for (const e of entries) {
+              const w = e.contentRect.width;
+              if (w > 0) {
+                const aspect = (height || 10) / (width || 10);
+                setDims({ w, h: Math.max(300, w * aspect) });
+              }
+            }
+          });
+          if (svgRef.current?.parentElement)
+            ro.observe(svgRef.current.parentElement);
+          return () => ro.disconnect();
+        }, [width, height]);
+
+        const fw = width || 10;
+        const fh = height || 10;
+        const scaleX = (dims.w - PADDING * 2) / fw;
+        const scaleY = (dims.h - PADDING * 2) / fh;
+        const scale = Math.min(scaleX, scaleY);
+        const tx = (v) => PADDING + v * scale;
+        const ty = (v) => PADDING + v * scale;
+
+        const ROOM_COLORS = [
+          "#3b82f620",
+          "#10b98120",
+          "#f59e0b20",
+          "#ef444420",
+          "#8b5cf620",
+          "#06b6d420",
+        ];
+        const ROOM_BORDERS = [
+          "#3b82f6",
+          "#10b981",
+          "#f59e0b",
+          "#ef4444",
+          "#8b5cf6",
+          "#06b6d4",
+        ];
+
+        return h(
+          "svg",
+          {
+            ref: svgRef,
+            viewBox: `0 0 ${dims.w} ${dims.h}`,
+            className: `${className} bg-panel rounded-lg border border-border`,
+            style: { maxHeight: 500 },
+          },
+          // Grid
+          ...Array.from({ length: Math.ceil(fw) + 1 }, (_, i) =>
+            h("line", {
+              key: `gx${i}`,
+              x1: tx(i),
+              y1: ty(0),
+              x2: tx(i),
+              y2: ty(fh),
+              stroke: "#e5e7eb",
+              strokeWidth: 0.5,
+            }),
+          ),
+          ...Array.from({ length: Math.ceil(fh) + 1 }, (_, i) =>
+            h("line", {
+              key: `gy${i}`,
+              x1: tx(0),
+              y1: ty(i),
+              x2: tx(fw),
+              y2: ty(i),
+              stroke: "#e5e7eb",
+              strokeWidth: 0.5,
+            }),
+          ),
+          // Floor boundary
+          h("rect", {
+            x: tx(0),
+            y: ty(0),
+            width: fw * scale,
+            height: fh * scale,
+            fill: "none",
+            stroke: "#374151",
+            strokeWidth: 2,
+            strokeDasharray: "6,3",
+          }),
+          // Axis labels
+          h(
+            "text",
+            {
+              x: tx(fw / 2),
+              y: dims.h - 8,
+              textAnchor: "middle",
+              className: "text-[10px] fill-gray-400",
+            },
+            `${fw}m`,
+          ),
+          h(
+            "text",
+            {
+              x: 10,
+              y: ty(fh / 2),
+              textAnchor: "middle",
+              className: "text-[10px] fill-gray-400",
+              transform: `rotate(-90, 10, ${ty(fh / 2)})`,
+            },
+            `${fh}m`,
+          ),
+          // Rooms
+          ...rooms.map((r, i) => {
+            const poly = r.polygon;
+            if (!poly || poly.length < 3) return null;
+            const points = poly.map((p) => `${tx(p[0])},${ty(p[1])}`).join(" ");
+            const cx = poly.reduce((s, p) => s + p[0], 0) / poly.length;
+            const cy = poly.reduce((s, p) => s + p[1], 0) / poly.length;
+            return h(
+              "g",
+              { key: `room-${i}` },
+              h("polygon", {
+                points,
+                fill: ROOM_COLORS[i % ROOM_COLORS.length],
+                stroke: ROOM_BORDERS[i % ROOM_BORDERS.length],
+                strokeWidth: 1.5,
+              }),
+              h(
+                "text",
+                {
+                  x: tx(cx),
+                  y: ty(cy),
+                  textAnchor: "middle",
+                  dominantBaseline: "central",
+                  className: "text-[11px] font-medium",
+                  fill: ROOM_BORDERS[i % ROOM_BORDERS.length],
+                },
+                r.name,
+              ),
+            );
+          }),
+          // Anchors
+          ...anchors.map((a, i) =>
+            h(
+              "g",
+              { key: `anchor-${i}` },
+              h("rect", {
+                x: tx(a.x_m) - 8,
+                y: ty(a.y_m) - 8,
+                width: 16,
+                height: 16,
+                rx: 3,
+                fill: "#1e40af",
+                stroke: "#fff",
+                strokeWidth: 2,
+              }),
+              h(
+                "text",
+                {
+                  x: tx(a.x_m),
+                  y: ty(a.y_m),
+                  textAnchor: "middle",
+                  dominantBaseline: "central",
+                  className: "text-[8px] font-bold",
+                  fill: "#fff",
+                },
+                (a.anchor_id || "")
+                  .replace("AP", "")
+                  .replace("ESP_", "E")
+                  .slice(0, 2),
+              ),
+              h(
+                "text",
+                {
+                  x: tx(a.x_m),
+                  y: ty(a.y_m) + 18,
+                  textAnchor: "middle",
+                  className: "text-[9px]",
+                  fill: "#6b7280",
+                },
+                a.anchor_id,
+              ),
+            ),
+          ),
+          // Devices
+          ...devices.map((d, i) =>
+            h(
+              "g",
+              { key: `dev-${i}` },
+              h("circle", {
+                cx: tx(d.x || 0),
+                cy: ty(d.y || 0),
+                r: 10,
+                fill: d.reachable ? "#10b981" : "#9ca3af",
+                stroke: "#fff",
+                strokeWidth: 2.5,
+              }),
+              h("circle", {
+                cx: tx(d.x || 0),
+                cy: ty(d.y || 0),
+                r: 16,
+                fill: "none",
+                stroke: d.reachable ? "#10b98140" : "none",
+                strokeWidth: 2,
+                className: d.reachable ? "pulse-dot" : "",
+              }),
+              h(
+                "text",
+                {
+                  x: tx(d.x || 0),
+                  y: ty(d.y || 0) + 22,
+                  textAnchor: "middle",
+                  className: "text-[9px] font-medium",
+                  fill: "#374151",
+                },
+                d.device_id,
+              ),
+            ),
+          ),
+        );
+      }
+
+      function MapView() {
+        const { data: mapData, error: mapError } = usePolling(
+          () => engine.map(),
+          3000,
+        );
+        const [selectedCampus, setSelectedCampus] = useState(null);
+        const [selectedBuilding, setSelectedBuilding] = useState(null);
+        const [selectedFloor, setSelectedFloor] = useState(null);
+        const [platformRooms, setPlatformRooms] = useState([]);
+        const [platformAnchors, setPlatformAnchors] = useState([]);
+
+        // Load hierarchy from platform
+        const { data: campuses } = useApi(() => platform.listCampuses());
+
+        useEffect(() => {
+          if (campuses?.length && !selectedCampus)
+            setSelectedCampus(campuses[0]);
+        }, [campuses]);
+
+        const { data: buildings } = useApi(
+          () =>
+            selectedCampus
+              ? platform.listBuildings(selectedCampus.id)
+              : Promise.resolve([]),
+          [selectedCampus?.id],
+        );
+        useEffect(() => {
+          if (buildings?.length && !selectedBuilding)
+            setSelectedBuilding(buildings[0]);
+        }, [buildings]);
+
+        const { data: floors } = useApi(
+          () =>
+            selectedBuilding
+              ? platform.listFloors(selectedBuilding.id)
+              : Promise.resolve([]),
+          [selectedBuilding?.id],
+        );
+        useEffect(() => {
+          if (floors?.length && !selectedFloor) setSelectedFloor(floors[0]);
+        }, [floors]);
+
+        // Load rooms + anchors for selected floor
+        useEffect(() => {
+          if (!selectedFloor) return;
+          platform
+            .listRooms(selectedFloor.id)
+            .then((r) => setPlatformRooms(r || []))
+            .catch(() => {});
+          platform
+            .listAnchors(selectedFloor.id)
+            .then((a) => setPlatformAnchors(a || []))
+            .catch(() => {});
+        }, [selectedFloor?.id]);
+
+        // Merge: prefer platform data, fallback to engine
+        const rooms =
+          platformRooms.length > 0 ? platformRooms : mapData?.rooms || [];
+        const anchors = platformAnchors;
+        const devices = mapData?.devices || [];
+        const floorW = selectedFloor?.width_m || mapData?.floor?.width_m || 20;
+        const floorH =
+          selectedFloor?.height_m || mapData?.floor?.height_m || 15;
+
+        return h(
+          "div",
+          { className: "fade-in" },
+          h(
+            "div",
+            { className: "flex items-center justify-between mb-6" },
+            h(
+              "div",
+              null,
+              h("h1", { className: "text-2xl font-semibold text-ink" }, "Map View"),
+              h(
+                "p",
+                { className: "text-muted text-sm mt-1" },
+                "Real-time floor plan with device tracking",
+              ),
+            ),
+            mapError && h(Badge, { color: "red" }, "Engine offline"),
+          ),
+          // Floor selector
+          h(
+            "div",
+            { className: "flex items-center gap-3 mb-4 flex-wrap" },
+            campuses?.length > 1 &&
+              h(Select, {
+                value: selectedCampus?.id || "",
+                onChange: (v) =>
+                  setSelectedCampus(campuses.find((c) => c.id == v)),
+                options: (campuses || []).map((c) => ({
+                  value: c.id,
+                  label: c.name,
+                })),
+                className: "w-48",
+              }),
+            buildings?.length > 1 &&
+              h(Select, {
+                value: selectedBuilding?.id || "",
+                onChange: (v) =>
+                  setSelectedBuilding(buildings.find((b) => b.id == v)),
+                options: (buildings || []).map((b) => ({
+                  value: b.id,
+                  label: b.name,
+                })),
+                className: "w-48",
+              }),
+            floors?.length > 0 &&
+              h(
+                "div",
+                { className: "flex gap-1" },
+                floors.map((f) =>
+                  h(
+                    "button",
+                    {
+                      key: f.id,
+                      onClick: () => setSelectedFloor(f),
+                      className: `px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                        selectedFloor?.id === f.id
+                          ? "bg-accent text-white"
+                          : "bg-surface-dim text-ink-secondary hover:text-ink hover:bg-panel border border-transparent hover:border-border"
+                      }`,
+                    },
+                    f.name,
+                  ),
+                ),
+              ),
+          ),
+          // Map canvas
+          h(
+            Card,
+            { className: "mb-6" },
+            !rooms.length && !devices.length && !anchors.length
+              ? h(EmptyState, {
+                  icon: "\uD83D\uDDFA\uFE0F",
+                  title: "No floor data yet",
+                  description:
+                    "Use the Setup Wizard to create rooms and place anchors, or start the engine to see live data",
+                })
+              : h(FloorCanvas, {
+                  width: floorW,
+                  height: floorH,
+                  rooms,
+                  anchors,
+                  devices,
+                }),
+          ),
+          // Device summary cards
+          devices.length > 0 &&
+            h(
+              "div",
+              {
+                className:
+                  "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4",
+              },
+              devices.map((d, i) =>
+                h(
+                  "div",
+                  {
+                    key: i,
+                    className: "bg-panel rounded-lg border border-border p-4",
+                  },
+                  h(
+                    "div",
+                    { className: "flex items-center justify-between mb-2" },
+                    h(
+                      "span",
+                      { className: "font-medium text-sm" },
+                      d.device_id,
+                    ),
+                    h(StatusDot, {
+                      status: d.reachable ? "online" : "offline",
+                    }),
+                  ),
+                  h(
+                    "div",
+                    { className: "text-xs text-muted space-y-1" },
+                    d.room_id && h("div", null, `Room: ${d.room_id}`),
+                    d.x != null &&
+                      d.y != null &&
+                      h(
+                        "div",
+                        { className: "font-mono" },
+                        `(${Number(d.x).toFixed(1)}, ${Number(d.y).toFixed(1)})m`,
+                      ),
+                    d.timestamp &&
+                      h(
+                        "div",
+                        null,
+                        new Date(d.timestamp).toLocaleTimeString(),
+                      ),
+                  ),
+                ),
+              ),
+            ),
+        );
+      }
+
+      // ═════════════════════════════════════════════════════════════════════
+      // PAGE: DEVICE TABLES
+      // ═════════════════════════════════════════════════════════════════════
+
+      function DeviceTables() {
+        const [tab, setTab] = useState("anchors");
+        return h(
+          "div",
+          { className: "fade-in" },
+          h(
+            "div",
+            { className: "mb-6" },
+            h("h1", { className: "text-2xl font-semibold text-ink" }, "Devices"),
+            h(
+              "p",
+              { className: "text-muted text-sm mt-1" },
+              "Manage anchors and tracked tags",
+            ),
+          ),
+          h(
+            "div",
+            { className: "flex gap-1 mb-6" },
+            ["anchors", "tags"].map((t) =>
+              h(
+                "button",
+                {
+                  key: t,
+                  onClick: () => setTab(t),
+                  className: `px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    tab === t
+                      ? "bg-accent text-white"
+                      : "bg-surface-dim text-ink-secondary hover:text-ink hover:bg-panel border border-transparent hover:border-border"
+                  }`,
+                },
+                t === "anchors" ? "Anchors" : "Tags",
+              ),
+            ),
+          ),
+          tab === "anchors" ? h(AnchorsTable) : h(TagsTable),
+        );
+      }
+
+      function AnchorsTable() {
+        const { data, loading, error, reload } = useApi(() =>
+          platform.listAllAnchors(),
+        );
+        const [filter, setFilter] = useState("");
+
+        if (loading) return h(LoadingSpinner);
+        if (error)
+          return h(ErrorBanner, {
+            message: `Could not load anchors: ${error}`,
+            onRetry: reload,
+          });
+
+        const items = (data || []).filter(
+          (a) =>
+            !filter ||
+            a.anchor_id.toLowerCase().includes(filter.toLowerCase()) ||
+            a.anchor_type.includes(filter.toLowerCase()),
+        );
+
+        return h(
+          Card,
+          null,
+          h(
+            "div",
+            { className: "flex items-center justify-between mb-4" },
+            h(Input, {
+              placeholder: "Filter anchors...",
+              value: filter,
+              onChange: setFilter,
+              className: "w-64",
+            }),
+            h(
+              "span",
+              { className: "text-sm text-muted" },
+              `${items.length} anchors`,
+            ),
+          ),
+          items.length === 0
+            ? h(EmptyState, {
+                icon: "\uD83D\uDCE1",
+                title: "No anchors found",
+                description: "Add anchors through the Setup Wizard",
+              })
+            : h(
+                "div",
+                { className: "overflow-x-auto" },
+                h(
+                  "table",
+                  { className: "w-full text-sm" },
+                  h(
+                    "thead",
+                    null,
+                    h(
+                      "tr",
+                      { className: "border-b border-border" },
+                      [
+                        "ID",
+                        "Type",
+                        "IP",
+                        "MAC",
+                        "Position",
+                        "Status",
+                        "Capabilities",
+                        "Last Polled",
+                      ].map((col) =>
+                        h(
+                          "th",
+                          {
+                            key: col,
+                            className:
+                              "text-left py-3 px-3 text-xs font-medium text-muted uppercase tracking-wider",
+                          },
+                          col,
+                        ),
+                      ),
+                    ),
+                  ),
+                  h(
+                    "tbody",
+                    null,
+                    items.map((a) =>
+                      h(
+                        "tr",
+                        {
+                          key: a.id,
+                          className:
+                            "border-b border-surface-dim hover:bg-surface-dim",
+                        },
+                        h(
+                          "td",
+                          { className: "py-3 px-3 font-mono font-medium" },
+                          a.anchor_id,
+                        ),
+                        h(
+                          "td",
+                          { className: "py-3 px-3" },
+                          h(
+                            Badge,
+                            {
+                              color:
+                                a.anchor_type === "esp32" ? "purple" : "blue",
+                            },
+                            a.anchor_type,
+                          ),
+                        ),
+                        h(
+                          "td",
+                          { className: "py-3 px-3 font-mono text-xs" },
+                          a.ip_address || "\u2014",
+                        ),
+                        h(
+                          "td",
+                          { className: "py-3 px-3 font-mono text-xs" },
+                          a.mac_address || "\u2014",
+                        ),
+                        h(
+                          "td",
+                          { className: "py-3 px-3 font-mono text-xs" },
+                          `(${a.x_m}, ${a.y_m})`,
+                        ),
+                        h(
+                          "td",
+                          { className: "py-3 px-3" },
+                          h(
+                            "div",
+                            { className: "flex items-center gap-1.5" },
+                            h(StatusDot, { status: a.status }),
+                            h("span", { className: "text-xs" }, a.status),
+                          ),
+                        ),
+                        h(
+                          "td",
+                          { className: "py-3 px-3" },
+                          h(
+                            "div",
+                            { className: "flex gap-1 flex-wrap" },
+                            (a.capabilities || []).map((c) =>
+                              h(Badge, { key: c, color: "gray" }, c),
+                            ),
+                          ),
+                        ),
+                        h(
+                          "td",
+                          { className: "py-3 px-3 text-xs text-muted" },
+                          a.last_polled
+                            ? new Date(a.last_polled).toLocaleString()
+                            : "Never",
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+        );
+      }
+
+      function TagsTable() {
+        const { data, loading, error, reload } = useApi(() =>
+          platform.listTags(),
+        );
+        const [filter, setFilter] = useState("");
+        const [showCreate, setShowCreate] = useState(false);
+        const [form, setForm] = useState({
+          tag_id: "",
+          ssid: "",
+          mac_address: "",
+          rssi_at_1m_dbm: -22,
+          path_loss_n: 4.0,
+        });
+        const [creating, setCreating] = useState(false);
+
+        const handleCreate = async () => {
+          if (!form.tag_id.trim()) return;
+          setCreating(true);
+          try {
+            await platform.createTag({
+              ...form,
+              tag_id: form.tag_id.trim(),
+              rssi_at_1m_dbm: +form.rssi_at_1m_dbm,
+              path_loss_n: +form.path_loss_n,
+            });
+            setForm({
+              tag_id: "",
+              ssid: "",
+              mac_address: "",
+              rssi_at_1m_dbm: -22,
+              path_loss_n: 4.0,
+            });
+            setShowCreate(false);
+            reload();
+          } catch (e) {
+            alert(e.message);
+          } finally {
+            setCreating(false);
+          }
+        };
+
+        if (loading) return h(LoadingSpinner);
+        if (error)
+          return h(ErrorBanner, {
+            message: `Could not load tags: ${error}`,
+            onRetry: reload,
+          });
+
+        const items = (data || []).filter(
+          (t) =>
+            !filter ||
+            t.tag_id.toLowerCase().includes(filter.toLowerCase()) ||
+            (t.ssid || "").toLowerCase().includes(filter.toLowerCase()),
+        );
+
+        return h(
+          "div",
+          { className: "space-y-4" },
+          showCreate &&
+            h(
+              Card,
+              { title: "Register Tag" },
+              h(
+                "div",
+                { className: "grid grid-cols-2 lg:grid-cols-3 gap-3 mb-3" },
+                h(Input, {
+                  label: "Tag ID",
+                  value: form.tag_id,
+                  onChange: (v) => setForm((f) => ({ ...f, tag_id: v })),
+                  placeholder: "e.g. tag_001",
+                }),
+                h(Input, {
+                  label: "SSID",
+                  value: form.ssid,
+                  onChange: (v) => setForm((f) => ({ ...f, ssid: v })),
+                  placeholder: "e.g. NothingPhone",
+                }),
+                h(Input, {
+                  label: "MAC Address",
+                  value: form.mac_address,
+                  onChange: (v) => setForm((f) => ({ ...f, mac_address: v })),
+                  placeholder: "AA:BB:CC:DD:EE:FF",
+                }),
+                h(Input, {
+                  label: "RSSI @ 1m (dBm)",
+                  type: "number",
+                  value: form.rssi_at_1m_dbm,
+                  onChange: (v) =>
+                    setForm((f) => ({ ...f, rssi_at_1m_dbm: v })),
+                }),
+                h(Input, {
+                  label: "Path Loss (n)",
+                  type: "number",
+                  step: "0.1",
+                  value: form.path_loss_n,
+                  onChange: (v) => setForm((f) => ({ ...f, path_loss_n: v })),
+                }),
+              ),
+              h(
+                "div",
+                { className: "flex gap-2" },
+                h(
+                  Button,
+                  {
+                    onClick: handleCreate,
+                    disabled: creating || !form.tag_id.trim(),
+                  },
+                  "Register",
+                ),
+                h(
+                  Button,
+                  { variant: "ghost", onClick: () => setShowCreate(false) },
+                  "Cancel",
+                ),
+              ),
+            ),
+          h(
+            Card,
+            null,
+            h(
+              "div",
+              { className: "flex items-center justify-between mb-4" },
+              h(Input, {
+                placeholder: "Filter tags...",
+                value: filter,
+                onChange: setFilter,
+                className: "w-64",
+              }),
+              h(
+                "div",
+                { className: "flex items-center gap-3" },
+                h(
+                  "span",
+                  { className: "text-sm text-muted" },
+                  `${items.length} tags`,
+                ),
+                !showCreate &&
+                  h(
+                    Button,
+                    { size: "sm", onClick: () => setShowCreate(true) },
+                    "+ Register Tag",
+                  ),
+              ),
+            ),
+            items.length === 0
+              ? h(EmptyState, {
+                  icon: "\uD83D\uDCF1",
+                  title: "No tags registered",
+                  description: "Register a device to begin tracking",
+                })
+              : h(
+                  "div",
+                  { className: "overflow-x-auto" },
+                  h(
+                    "table",
+                    { className: "w-full text-sm" },
+                    h(
+                      "thead",
+                      null,
+                      h(
+                        "tr",
+                        { className: "border-b border-border" },
+                        [
+                          "Tag ID",
+                          "SSID",
+                          "MAC",
+                          "RSSI/PL",
+                          "Status",
+                          "Trilateration",
+                          "Fingerprint",
+                          "Last Polled",
+                        ].map((col) =>
+                          h(
+                            "th",
+                            {
+                              key: col,
+                              className:
+                                "text-left py-3 px-3 text-xs font-medium text-muted uppercase tracking-wider",
+                            },
+                            col,
+                          ),
+                        ),
+                      ),
+                    ),
+                    h(
+                      "tbody",
+                      null,
+                      items.map((t) =>
+                        h(
+                          "tr",
+                          {
+                            key: t.id,
+                            className:
+                              "border-b border-surface-dim hover:bg-surface-dim",
+                          },
+                          h(
+                            "td",
+                            { className: "py-3 px-3 font-mono font-medium" },
+                            t.tag_id,
+                          ),
+                          h(
+                            "td",
+                            { className: "py-3 px-3" },
+                            t.ssid || "\u2014",
+                          ),
+                          h(
+                            "td",
+                            { className: "py-3 px-3 font-mono text-xs" },
+                            t.mac_address || "\u2014",
+                          ),
+                          h(
+                            "td",
+                            { className: "py-3 px-3 font-mono text-xs" },
+                            `${t.rssi_at_1m_dbm}dBm / n=${t.path_loss_n}`,
+                          ),
+                          h(
+                            "td",
+                            { className: "py-3 px-3" },
+                            h(
+                              "div",
+                              { className: "flex items-center gap-1.5" },
+                              h(StatusDot, { status: t.status }),
+                              h("span", { className: "text-xs" }, t.status),
+                            ),
+                          ),
+                          h(
+                            "td",
+                            { className: "py-3 px-3 text-xs" },
+                            t.trilateration_location || "\u2014",
+                          ),
+                          h(
+                            "td",
+                            { className: "py-3 px-3 text-xs" },
+                            t.fingerprint_location || "\u2014",
+                          ),
+                          h(
+                            "td",
+                            { className: "py-3 px-3 text-xs text-muted" },
+                            t.last_polled
+                              ? new Date(t.last_polled).toLocaleString()
+                              : "Never",
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+          ),
+        );
+      }
+
+      // ═════════════════════════════════════════════════════════════════════
+      // PAGE: LOGS
+      // ═════════════════════════════════════════════════════════════════════
+
+      function LogsPage() {
+        const [tab, setTab] = useState("crossings");
+        return h(
+          "div",
+          { className: "fade-in" },
+          h(
+            "div",
+            { className: "mb-6" },
+            h("h1", { className: "text-2xl font-semibold text-ink" }, "Event Logs"),
+            h(
+              "p",
+              { className: "text-muted text-sm mt-1" },
+              "Boundary crossings and alerts",
+            ),
+          ),
+          h(
+            "div",
+            { className: "flex gap-1 mb-6" },
+            ["crossings", "alerts", "engine"].map((t) =>
+              h(
+                "button",
+                {
+                  key: t,
+                  onClick: () => setTab(t),
+                  className: `px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    tab === t
+                      ? "bg-accent text-white"
+                      : "bg-surface-dim text-ink-secondary hover:text-ink hover:bg-panel border border-transparent hover:border-border"
+                  }`,
+                },
+                t === "crossings"
+                  ? "Crossings"
+                  : t === "alerts"
+                    ? "Alerts"
+                    : "Engine Logs",
+              ),
+            ),
+          ),
+          tab === "crossings" && h(CrossingsTable),
+          tab === "alerts" && h(AlertsTable),
+          tab === "engine" && h(EngineLogsTable),
+        );
+      }
+
+      function CrossingsTable() {
+        const { data, loading, error, reload } = useApi(() =>
+          platform.listCrossings({ limit: 100 }),
+        );
+        if (loading) return h(LoadingSpinner);
+        if (error) return h(ErrorBanner, { message: error, onRetry: reload });
+        const items = data || [];
+        return h(
+          Card,
+          {
+            title: "Boundary Crossings",
+            actions: h(
+              Button,
+              { variant: "ghost", size: "sm", onClick: reload },
+              "Refresh",
+            ),
+          },
+          items.length === 0
+            ? h(EmptyState, {
+                icon: "\uD83D\uDEB6",
+                title: "No boundary crossings yet",
+                description:
+                  "Crossings appear when tracked devices move between rooms",
+              })
+            : h(
+                "div",
+                { className: "overflow-x-auto" },
+                h(
+                  "table",
+                  { className: "w-full text-sm" },
+                  h(
+                    "thead",
+                    null,
+                    h(
+                      "tr",
+                      { className: "border-b border-border" },
+                      ["Time", "Tag", "From", "To", "Method", "Confidence"].map(
+                        (c) =>
+                          h(
+                            "th",
+                            {
+                              key: c,
+                              className:
+                                "text-left py-3 px-3 text-xs font-medium text-muted uppercase tracking-wider",
+                            },
+                            c,
+                          ),
+                      ),
+                    ),
+                  ),
+                  h(
+                    "tbody",
+                    null,
+                    items.map((c) =>
+                      h(
+                        "tr",
+                        { key: c.id, className: "border-b border-surface-dim" },
+                        h(
+                          "td",
+                          { className: "py-3 px-3 text-xs font-mono" },
+                          new Date(c.timestamp).toLocaleString(),
+                        ),
+                        h(
+                          "td",
+                          { className: "py-3 px-3 font-medium" },
+                          c.tag_id,
+                        ),
+                        h(
+                          "td",
+                          { className: "py-3 px-3" },
+                          c.previous_location || "\u2014",
+                        ),
+                        h(
+                          "td",
+                          { className: "py-3 px-3" },
+                          c.new_location || "\u2014",
+                        ),
+                        h(
+                          "td",
+                          { className: "py-3 px-3" },
+                          h(
+                            Badge,
+                            { color: "blue" },
+                            c.localization_method || "rssi",
+                          ),
+                        ),
+                        h(
+                          "td",
+                          { className: "py-3 px-3" },
+                          h(
+                            Badge,
+                            {
+                              color:
+                                (c.confidence || 0) >= 0.7
+                                  ? "green"
+                                  : (c.confidence || 0) >= 0.4
+                                    ? "yellow"
+                                    : "red",
+                            },
+                            `${((c.confidence || 0) * 100).toFixed(0)}%`,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+        );
+      }
+
+      function AlertsTable() {
+        const { data, loading, error, reload } = useApi(() =>
+          platform.listAlerts({ limit: 100 }),
+        );
+        if (loading) return h(LoadingSpinner);
+        if (error) return h(ErrorBanner, { message: error, onRetry: reload });
+        const items = data || [];
+
+        const handleAck = async (id) => {
+          try {
+            await platform.ackAlert(id, "admin");
+            reload();
+          } catch (e) {
+            alert(e.message);
+          }
+        };
+
+        return h(
+          Card,
+          {
+            title: "Alerts",
+            actions: h(
+              Button,
+              { variant: "ghost", size: "sm", onClick: reload },
+              "Refresh",
+            ),
+          },
+          items.length === 0
+            ? h(EmptyState, {
+                icon: "\uD83D\uDD14",
+                title: "No alerts",
+                description:
+                  "Alerts fire when high-priority tags exit assigned rooms",
+              })
+            : h(
+                "div",
+                { className: "overflow-x-auto" },
+                h(
+                  "table",
+                  { className: "w-full text-sm" },
+                  h(
+                    "thead",
+                    null,
+                    h(
+                      "tr",
+                      { className: "border-b border-border" },
+                      [
+                        "Time",
+                        "Tag",
+                        "Severity",
+                        "Room",
+                        "Exited To",
+                        "Acknowledged",
+                        "",
+                      ].map((c) =>
+                        h(
+                          "th",
+                          {
+                            key: c,
+                            className:
+                              "text-left py-3 px-3 text-xs font-medium text-muted uppercase tracking-wider",
+                          },
+                          c,
+                        ),
+                      ),
+                    ),
+                  ),
+                  h(
+                    "tbody",
+                    null,
+                    items.map((a) =>
+                      h(
+                        "tr",
+                        {
+                          key: a.id,
+                          className: `border-b border-surface-dim ${!a.acknowledged ? "bg-red-50/50" : ""}`,
+                        },
+                        h(
+                          "td",
+                          { className: "py-3 px-3 text-xs font-mono" },
+                          new Date(a.timestamp).toLocaleString(),
+                        ),
+                        h(
+                          "td",
+                          { className: "py-3 px-3 font-medium" },
+                          a.tag_id,
+                        ),
+                        h(
+                          "td",
+                          { className: "py-3 px-3" },
+                          h(
+                            Badge,
+                            { color: a.severity === "high" ? "red" : "yellow" },
+                            a.severity,
+                          ),
+                        ),
+                        h(
+                          "td",
+                          { className: "py-3 px-3" },
+                          a.assigned_room || "\u2014",
+                        ),
+                        h(
+                          "td",
+                          { className: "py-3 px-3" },
+                          a.exited_to || "\u2014",
+                        ),
+                        h(
+                          "td",
+                          { className: "py-3 px-3" },
+                          a.acknowledged
+                            ? h(
+                                Badge,
+                                { color: "green" },
+                                `By ${a.acknowledged_by}`,
+                              )
+                            : h(Badge, { color: "red" }, "Unacknowledged"),
+                        ),
+                        h(
+                          "td",
+                          { className: "py-3 px-3" },
+                          !a.acknowledged &&
+                            h(
+                              Button,
+                              {
+                                variant: "ghost",
+                                size: "sm",
+                                onClick: () => handleAck(a.id),
+                              },
+                              "Ack",
+                            ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+        );
+      }
+
+      function EngineLogsTable() {
+        const { data, error } = usePolling(
+          () => engine.logs({ limit: 100 }),
+          5000,
+        );
+        if (error)
+          return h(ErrorBanner, { message: `Engine offline: ${error}` });
+        const items = data?.items || [];
+
+        return h(
+          Card,
+          { title: "Engine Logs (Live)" },
+          items.length === 0
+            ? h(EmptyState, {
+                icon: "\uD83D\uDCCB",
+                title: "No engine logs yet",
+                description:
+                  "Logs appear when the engine is running and processing scans",
+              })
+            : h(
+                "div",
+                { className: "max-h-96 overflow-y-auto" },
+                h(
+                  "div",
+                  { className: "space-y-1 font-mono text-xs" },
+                  items
+                    .slice()
+                    .reverse()
+                    .map((l, i) =>
+                      h(
+                        "div",
+                        {
+                          key: i,
+                          className: `flex gap-3 px-3 py-1.5 rounded ${l.severity === "WARN" ? "bg-amber-50" : "hover:bg-surface-dim"}`,
+                        },
+                        h(
+                          "span",
+                          { className: "text-muted whitespace-nowrap" },
+                          l.timestamp
+                            ? new Date(l.timestamp).toLocaleTimeString()
+                            : "",
+                        ),
+                        h(
+                          "span",
+                          {
+                            className: `w-10 ${l.severity === "WARN" ? "text-amber-600" : "text-gray-400"}`,
+                          },
+                          l.severity,
+                        ),
+                        h("span", { className: "text-gray-600" }, l.device_id),
+                        h(
+                          "span",
+                          { className: "text-gray-800 flex-1" },
+                          l.message,
+                        ),
+                      ),
+                    ),
+                ),
+              ),
+        );
+      }
+
+      // ═════════════════════════════════════════════════════════════════════
+      // APP ROOT
+      // ═════════════════════════════════════════════════════════════════════
+
+      function App() {
+        const [page, setPage] = useState("wizard");
+        const { data: engineHealth } = usePolling(
+          () => engine.health().catch(() => null),
+          5000,
+        );
+
+        return h(
+          Layout,
+          { page, setPage, engineHealth },
+          page === "wizard" && h(SetupWizard),
+          page === "map" && h(MapView),
+          page === "devices" && h(DeviceTables),
+          page === "logs" && h(LogsPage),
+        );
+      }
+
+      // ─── MOUNT ───────────────────────────────────────────────────────────
+      createRoot(document.getElementById("root")).render(h(App));
+    </script>
+  </body>
+</html>

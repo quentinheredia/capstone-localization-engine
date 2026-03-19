@@ -1,0 +1,67 @@
+# =============================================================================
+# IPS Platform — Full Stack
+#
+# Services:
+#   postgres    — Database (Campus, Building, Floor, Room, Anchor, Tag, Log)
+#   redis       — Real-time location cache (engine pushes, frontend reads)
+#   platform    — Management API (port 8080) — this repo's platform/backend
+#   engine      — Localization engine (port 8001) — Hybrid/ container
+#
+# One container per campus.  The platform generates config.yaml from
+# the database and mounts it into the engine container at runtime.
+#
+# Usage:
+#   docker compose up -d postgres redis platform
+#   # Then via the platform API:
+#   POST /api/v1/engine/start?campus_id=1   (generates config + starts engine)
+# =============================================================================
+
+version: "3.9"
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ips
+      POSTGRES_PASSWORD: ips
+      POSTGRES_DB: ips_platform
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ips"]
+      interval: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 5
+
+  platform:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: "postgresql://ips:ips@postgres:5432/ips_platform"
+      REDIS_URL: "redis://redis:6379/0"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      # Mount the Hybrid directory so config generation and engine start work
+      - ../Hybrid:/app/Hybrid:rw
+      - ../.env:/app/.env:ro
+
+volumes:
+  pgdata:
