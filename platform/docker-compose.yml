@@ -19,7 +19,6 @@
 version: "3.9"
 
 services:
-
   postgres:
     image: postgres:16-alpine
     environment:
@@ -60,6 +59,7 @@ services:
         condition: service_healthy
     volumes:
       # Mount the Hybrid directory so config generation and engine start work
+      - ./backend:/app
       - ../Hybrid:/app/Hybrid:rw
       - ../.env:/app/.env:ro
 

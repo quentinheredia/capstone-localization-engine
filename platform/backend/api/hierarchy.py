@@ -9,12 +9,13 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from models import Campus, Building, Floor, Room, get_db
+from models import Campus, Building, Floor, Room, AccessLevel, get_db
 from api.schemas import (
     CampusCreate, CampusUpdate, CampusOut,
     BuildingCreate, BuildingUpdate, BuildingOut,
     FloorCreate, FloorUpdate, FloorOut,
     RoomCreate, RoomUpdate, RoomOut,
+    AccessLevelCreate, AccessLevelUpdate, AccessLevelOut,
 )
 
 router = APIRouter(prefix="/api/v1", tags=["hierarchy"])
@@ -220,4 +221,48 @@ def delete_room(room_id: int, db: Session = Depends(get_db)):
     if not room:
         raise HTTPException(404, "Room not found")
     db.delete(room)
+    db.commit()
+
+
+# ── Access Level ─────────────────────────────────────────────────────────
+
+@router.post("/buildings/{building_id}/access-levels", response_model=AccessLevelOut, status_code=201)
+def create_access_level(building_id: int, body: AccessLevelCreate, db: Session = Depends(get_db)):
+    if not db.get(Building, building_id):
+        raise HTTPException(404, "Building not found")
+    al = AccessLevel(building_id=building_id, **body.model_dump())
+    db.add(al)
+    db.commit()
+    db.refresh(al)
+    return al
+
+
+@router.get("/buildings/{building_id}/access-levels", response_model=List[AccessLevelOut])
+def list_access_levels(building_id: int, db: Session = Depends(get_db)):
+    return (
+        db.query(AccessLevel)
+        .filter(AccessLevel.building_id == building_id)
+        .order_by(AccessLevel.sort_order, AccessLevel.name)
+        .all()
+    )
+
+
+@router.patch("/access-levels/{level_id}", response_model=AccessLevelOut)
+def update_access_level(level_id: int, body: AccessLevelUpdate, db: Session = Depends(get_db)):
+    al = db.get(AccessLevel, level_id)
+    if not al:
+        raise HTTPException(404, "Access level not found")
+    for key, val in body.model_dump(exclude_unset=True).items():
+        setattr(al, key, val)
+    db.commit()
+    db.refresh(al)
+    return al
+
+
+@router.delete("/access-levels/{level_id}", status_code=204)
+def delete_access_level(level_id: int, db: Session = Depends(get_db)):
+    al = db.get(AccessLevel, level_id)
+    if not al:
+        raise HTTPException(404, "Access level not found")
+    db.delete(al)
     db.commit()

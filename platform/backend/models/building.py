@@ -18,5 +18,6 @@ class Building(Base):
     )
 
     # Relationships
-    campus = relationship("Campus", back_populates="buildings")
-    floors = relationship("Floor", back_populates="building", cascade="all, delete-orphan")
+    campus        = relationship("Campus", back_populates="buildings")
+    floors        = relationship("Floor", back_populates="building", cascade="all, delete-orphan")
+    access_levels = relationship("AccessLevel", back_populates="building", cascade="all, delete-orphan")
