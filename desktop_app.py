@@ -105,6 +105,210 @@ def _wait_for_server(port: int, proc: subprocess.Popen = None, timeout: int = 30
     return False, stderr or f"No response after {timeout}s"
 
 
+def _map_window_html(method: str, engine_port: int) -> str:
+    """
+    Self-contained HTML page for a pop-out map window.
+    Polls the engine /map?method=... endpoint and renders rooms + devices
+    on a full-window canvas.  No external dependencies.
+    """
+    labels = {
+        "trilateration": "Trilateration",
+        "fingerprinting": "Fingerprinting",
+        "ble": "BLE",
+        "tof": "Time-of-Flight",
+    }
+    label = labels.get(method, method)
+    return f"""<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<title>{label} — IPS Map</title>
+<style>
+*{{margin:0;padding:0;box-sizing:border-box}}
+body{{background:#111;color:#e4e4e7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;overflow:hidden}}
+#header{{display:flex;align-items:center;justify-content:space-between;padding:8px 16px;background:#1a1a2e;border-bottom:1px solid #333}}
+#header h2{{font-size:14px;font-weight:600}}
+#header .info{{font-size:11px;color:#a1a1aa}}
+canvas{{display:block}}
+#footer{{position:fixed;bottom:0;left:0;right:0;padding:6px 16px;background:#1a1a2e;border-top:1px solid #333;font:11px monospace;color:#a1a1aa;white-space:nowrap;overflow-x:auto}}
+</style>
+</head><body>
+<div id="header">
+  <h2>{label} Map</h2>
+  <span class="info" id="status">Connecting…</span>
+</div>
+<canvas id="c"></canvas>
+<div id="footer" id="devlist"></div>
+<script>
+const ENGINE = "http://localhost:{engine_port}";
+const METHOD = "{method}";
+const canvas = document.getElementById("c");
+const ctx    = canvas.getContext("2d");
+const status = document.getElementById("status");
+const footer = document.getElementById("footer");
+let rooms = [], devices = [], fw = 20, fh = 20;
+
+function resize() {{
+  canvas.width  = window.innerWidth;
+  canvas.height = window.innerHeight - 60;  // header + footer
+  canvas.style.marginTop = "0";
+  render();
+}}
+window.addEventListener("resize", resize);
+
+function render() {{
+  const W = canvas.width, H = canvas.height;
+  const sx = W / fw, sy = H / fh;
+  ctx.fillStyle = "#111";
+  ctx.fillRect(0, 0, W, H);
+
+  // Grid
+  ctx.strokeStyle = "#222";
+  ctx.lineWidth = 0.5;
+  for (let x = 0; x <= fw; x++) {{
+    ctx.beginPath(); ctx.moveTo(x*sx, 0); ctx.lineTo(x*sx, H); ctx.stroke();
+  }}
+  for (let y = 0; y <= fh; y++) {{
+    ctx.beginPath(); ctx.moveTo(0, y*sy); ctx.lineTo(W, y*sy); ctx.stroke();
+  }}
+
+  // Rooms
+  rooms.forEach(r => {{
+    if (!r.polygon || !r.polygon.length) return;
+    ctx.beginPath();
+    r.polygon.forEach(([px,py],i) => i===0 ? ctx.moveTo(px*sx,py*sy) : ctx.lineTo(px*sx,py*sy));
+    ctx.closePath();
+    ctx.fillStyle = "rgba(99,102,241,0.12)";
+    ctx.fill();
+    ctx.strokeStyle = "#6366f1";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    // Label
+    const cx = r.polygon.reduce((s,[px])=>s+px,0)/r.polygon.length;
+    const cy = r.polygon.reduce((s,[,py])=>s+py,0)/r.polygon.length;
+    ctx.fillStyle = "#a5b4fc";
+    ctx.font = Math.max(12, Math.min(18, W/30)) + "px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(r.name, cx*sx, cy*sy);
+  }});
+
+  // Devices
+  const dotR = Math.max(8, Math.min(16, W/60));
+  devices.forEach(d => {{
+    const dx = (d.x||0)*sx, dy = (d.y||0)*sy;
+    // Glow
+    ctx.beginPath(); ctx.arc(dx, dy, dotR+4, 0, Math.PI*2);
+    ctx.fillStyle = d.reachable ? "rgba(34,197,94,0.25)" : "rgba(248,113,113,0.25)";
+    ctx.fill();
+    // Dot
+    ctx.beginPath(); ctx.arc(dx, dy, dotR, 0, Math.PI*2);
+    ctx.fillStyle = d.reachable ? "#22c55e" : "#f87171";
+    ctx.fill();
+    ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.5; ctx.stroke();
+    // Label
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold " + Math.max(10, dotR) + "px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(d.device_id, dx, dy - dotR - 6);
+    // Room label below
+    if (d.room_id) {{
+      ctx.fillStyle = "#a1a1aa";
+      ctx.font = (dotR - 2) + "px sans-serif";
+      ctx.fillText(d.room_id, dx, dy + dotR + 10);
+    }}
+  }});
+}}
+
+async function poll() {{
+  try {{
+    const res = await fetch(ENGINE + "/map?method=" + METHOD);
+    if (!res.ok) throw new Error(res.status);
+    const data = await res.json();
+    rooms   = data.rooms   || [];
+    devices = data.devices || [];
+    if (data.floor) {{
+      fw = data.floor.width_m  || 20;
+      fh = data.floor.height_m || 20;
+    }}
+    status.textContent = devices.length + " device(s) · " + new Date().toLocaleTimeString();
+    footer.textContent = devices.map(d =>
+      d.device_id + " → " + (d.room_id||"?") + " (" + (d.x||0).toFixed(1) + ", " + (d.y||0).toFixed(1) + ")"
+    ).join("   ·   ") || "No devices";
+    render();
+  }} catch(e) {{
+    status.textContent = "Engine offline: " + e.message;
+  }}
+}}
+
+resize();
+poll();
+setInterval(poll, 2000);
+</script>
+</body></html>"""
+
+
+class JsApi:
+    """
+    Exposed to the frontend via pywebview's js_api.
+    Allows the React app to open native OS windows for pop-out maps.
+    """
+    def __init__(self):
+        print("[JsApi] Initialized")
+        self._popout_windows = {}
+
+    def open_map_window(self, method: str):
+        print("Creating window for method:", method)
+        """Open (or focus) a native window for the given localization method."""
+        if method in self._popout_windows:
+            print("Window already exists for method, trying to focus:", method)
+            try:
+                # If window still exists, bring to front
+                #w = self._popout_windows[method]
+                #w.on_top = True
+                #w.on_top = False
+                w.destroy()  # Temporary workaround to reliably bring to front on Windows
+                self.open_map_window(method)  # Recreate immediately after destroy
+                print(f"Focused window for {method}")
+                return {"ok": True, "action": "focused"}
+            except Exception as e:
+                print (f"Error focusing window for {method}, recreating:", e)
+                pass  # Window was closed, recreate
+
+        html = _map_window_html(method, HYBRID_PORT)
+        print("HTML Window created for method:", method, "On port:", HYBRID_PORT)
+        labels = {
+            "trilateration": "Trilateration",
+            "fingerprinting": "Fingerprinting",
+            "ble": "BLE",
+            "tof": "Time-of-Flight",
+        }
+        title = f"{labels.get(method, method)} — IPS Map"
+        w = webview.create_window(
+            title    = title,
+            html     = html,
+            width    = 800,
+            height   = 600,
+            min_size = (400, 300),
+        )
+        self._popout_windows[method] = w
+        print("Window created for method:", method)
+        return {"ok": True, "action": "opened"}
+
+    def close_map_window(self, method: str):
+        print("Closing window for method:", method)
+        """Close a pop-out map window."""
+        w = self._popout_windows.pop(method, None)
+        if w:
+            try:
+                print("trying to destroy window for method:", method)
+                w.destroy()
+            except Exception as e:
+                print("Error closing window for method:", method, "Error:", e)
+                pass
+        print("Window closed for method:", method)
+        return {"ok": True}
+
+
 class App:
     """Manages backend processes and the pywebview window."""
 
@@ -113,6 +317,7 @@ class App:
         self._hybrid_proc   = None
         self._window        = None
         self._lock          = None
+        self._js_api        = JsApi()
 
     # ── Server lifecycle ──────────────────────────────────────────────────
 
@@ -297,7 +502,7 @@ class App:
             width   = 1600,
             height  = 900,
             min_size= (1200, 700),
-            # Allow the page to make requests to localhost backends
+            js_api  = self._js_api,
         )
 
         # Start the server startup in a background thread

@@ -1,11 +1,13 @@
 """
 CRUD routes for Anchors and Tags.
 
-Anchors are scoped to a Floor.  Tags are global.
+Anchors can be registered globally (no floor) via POST /anchors,
+or placed on a specific floor via POST /floors/{floor_id}/anchors.
+Tags are always global.
 """
 
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from models import Anchor, Tag, Floor, get_db
@@ -17,16 +19,31 @@ from api.schemas import (
 router = APIRouter(prefix="/api/v1", tags=["devices"])
 
 
+def _validate_engenius_ip(anchor_type: str, ip_address: str):
+    if anchor_type == "engenius_ap" and ip_address:
+        if not ip_address.startswith("192.168.1."):
+            raise HTTPException(400, "EnGenius AP IP must be in 192.168.1.0/24")
+
+
 # ── Anchors ───────────────────────────────────────────────────────────────────
+
+@router.post("/anchors", response_model=AnchorOut, status_code=201)
+def register_anchor(body: AnchorCreate, db: Session = Depends(get_db)):
+    """Register an anchor into the device inventory without a floor assignment."""
+    _validate_engenius_ip(body.anchor_type, body.ip_address)
+    anchor = Anchor(floor_id=None, **body.model_dump())
+    db.add(anchor)
+    db.commit()
+    db.refresh(anchor)
+    return anchor
+
 
 @router.post("/floors/{floor_id}/anchors", response_model=AnchorOut, status_code=201)
 def create_anchor(floor_id: int, body: AnchorCreate, db: Session = Depends(get_db)):
+    """Place an anchor on a specific floor."""
     if not db.get(Floor, floor_id):
         raise HTTPException(404, "Floor not found")
-    # Validate EnGenius IP subnet
-    if body.anchor_type == "engenius_ap" and body.ip_address:
-        if not body.ip_address.startswith("192.168.1."):
-            raise HTTPException(400, "EnGenius AP IP must be in 192.168.1.0/24")
+    _validate_engenius_ip(body.anchor_type, body.ip_address)
     anchor = Anchor(floor_id=floor_id, **body.model_dump())
     db.add(anchor)
     db.commit()
@@ -43,6 +60,7 @@ def list_anchors(floor_id: int, db: Session = Depends(get_db)):
 def list_all_anchors(
     anchor_type: Optional[str] = None,
     status: Optional[str] = None,
+    device_status: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
     q = db.query(Anchor)
@@ -50,6 +68,8 @@ def list_all_anchors(
         q = q.filter_by(anchor_type=anchor_type)
     if status:
         q = q.filter_by(status=status)
+    if device_status:
+        q = q.filter_by(device_status=device_status)
     return q.order_by(Anchor.anchor_id).all()
 
 
@@ -67,10 +87,9 @@ def update_anchor(anchor_pk: int, body: AnchorUpdate, db: Session = Depends(get_
     if not anchor:
         raise HTTPException(404, "Anchor not found")
     updates = body.model_dump(exclude_unset=True)
-    # Validate IP change for EnGenius
-    if "ip_address" in updates and anchor.anchor_type == "engenius_ap":
-        if updates["ip_address"] and not updates["ip_address"].startswith("192.168.1."):
-            raise HTTPException(400, "EnGenius AP IP must be in 192.168.1.0/24")
+    effective_type = updates.get("anchor_type", anchor.anchor_type)
+    effective_ip   = updates.get("ip_address",   anchor.ip_address)
+    _validate_engenius_ip(effective_type, effective_ip)
     for key, val in updates.items():
         setattr(anchor, key, val)
     db.commit()

@@ -12,6 +12,16 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 from models.base import Base
 
+# Translates tag priority to EngineLog severity level on scope exit.
+# Priority 1 → None (scope must be ALL, no violation log generated).
+PRIORITY_LOG_LEVELS: dict = {
+    1: None,        # LOW   — roams freely; scope locked to ALL
+    2: "warn",      # —     — Warn on exit
+    3: "alert",     # —     — Alert on exit
+    4: "config",    # HIGH  — Config on exit (room-level scope permitted)
+    5: "security",  # CRIT  — Security on exit (room-level scope permitted)
+}
+
 
 class Tag(Base):
     __tablename__ = "tags"
@@ -38,6 +48,27 @@ class Tag(Base):
     created_at:        Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
+
+    # ── Identity & classification ─────────────────────────────────────────────
+    name:             Mapped[str]  = mapped_column(String(255), default="")   # friendly label, e.g. "Dr. Smith's Laptop"
+    device_type:      Mapped[str]  = mapped_column(String(100), default="")   # "laptop" | "phone" | "badge" | "tablet" | …
+
+    # ── Security & priority ───────────────────────────────────────────────────
+    security_level:   Mapped[int]  = mapped_column(Integer, default=1)        # 1–5+ clearance integer
+    priority:         Mapped[int]  = mapped_column(Integer, default=1)        # 1 (low) → 5 (critical)
+    #   1 = scope MUST be ALL (free-roaming, no alerts)
+    #   2 = Warn on scope exit
+    #   3 = Alert on scope exit
+    #   4/5 = Config/Security on scope exit; may have room-level scope
+
+    # ── Allowed location scope ────────────────────────────────────────────────
+    # floor_scope: JSON list of floor names the tag is allowed on.
+    #   ["ALL"] → no floor restriction.  ["Ground", "Second"] → two floors only.
+    floor_scope:      Mapped[list] = mapped_column(JSON, default=lambda: ["ALL"])
+
+    # room_scope: JSON list of room names the tag is allowed in.
+    #   [] → all rooms on the allowed floors.  ["Lab01"] → single room.
+    room_scope:       Mapped[list] = mapped_column(JSON, default=list)
 
     # Current location estimates (populated by engine, cached here + Redis)
     trilateration_location: Mapped[str]  = mapped_column(String(500), default="")

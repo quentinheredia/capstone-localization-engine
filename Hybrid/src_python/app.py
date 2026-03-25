@@ -5,8 +5,9 @@ Architecture
 ------------
   One process.  FastAPI runs on the main thread via uvicorn.
   asyncio background tasks drive TelnetPipe and MQTTPipe concurrently.
-  The latest C++ verdicts are held in _state (in-memory) and served
-  instantly to the frontend via REST.  No subprocess, no IPC.
+  Both trilateration AND fingerprinting run simultaneously (shared RSSI pipe).
+  Per-method decision rings are kept separately; /decisions returns trilateration
+  by default for backward-compat.
 
 Start
 -----
@@ -17,6 +18,11 @@ Environment
 -----------
   AWS_* credentials in .env (loaded by cloud_io.py at import time)
   TELEMETRY_CONFIG_PATH   override config path (optional)
+
+Poll interval
+-------------
+  Default poll_interval_s = 1.5 s (half the original 3 s default).
+  Set system.testing_mode: true in config.yaml to run with only 1 AP present.
 """
 
 from __future__ import annotations
@@ -33,7 +39,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
@@ -66,13 +72,16 @@ _poll_task: Optional[asyncio.Task] = None
 async def lifespan(app: FastAPI):
     global _poll_task
     # ── startup ──────────────────────────────────────────────────────────
+    # Load config (if present) so /config and /status work, but do NOT
+    # auto-start the poll loop.  The user starts localization explicitly
+    # via the platform's Start button (POST /engine/start) or the REST
+    # endpoint POST /poll/start.
     cfg = _load_cfg_from_disk()
     if cfg:
         _apply_cfg(cfg)
-        _poll_task = asyncio.create_task(_poll_loop(), name="poll_loop")
-        log.info("Startup complete — poll loop launched as background task")
+        log.info("Startup complete — config loaded, poll NOT auto-started (use POST /poll/start)")
     else:
-        log.warning("Startup: no config found — serving API only, poll not started")
+        log.warning("Startup: no config found — serving API only")
 
     yield  # application runs here
 
@@ -89,7 +98,7 @@ async def lifespan(app: FastAPI):
 # ---------------------------------------------------------------------------
 # FastAPI app
 # ---------------------------------------------------------------------------
-app = FastAPI(title="Capstone Telemetry — Hybrid", version="2.0.0", lifespan=lifespan)
+app = FastAPI(title="Capstone Telemetry — Hybrid", version="3.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -106,14 +115,20 @@ MAX_DECISIONS = 200
 MAX_LOGS      = 500
 
 _state: Dict[str, Any] = {
-    "cfg":           None,  # raw config dict
+    "cfg":           None,   # raw config dict
     "cfg_error":     None,
-    "env":           None,  # FloorEnvironment
-    "decisions":     [],    # List[dict]  serialised LocalizationDecision
-    "positions":     {},    # {device_id: {x, y, room_id, timestamp}}
-    "device_status": {},    # {device_id: {reachable, last_scan}}
-    "raw":           None,  # last RawSnapshot dict
-    "logs":          [],    # List[{timestamp, severity, device_id, message}]
+    "env":           None,   # FloorEnvironment
+    # Per-method decision rings
+    "rssi_decisions": [],    # trilateration verdicts
+    "fp_decisions":   [],    # fingerprinting verdicts
+    "ble_decisions":  [],    # BLE (stub — populated externally)
+    "tof_decisions":  [],    # ToF (stub — populated externally)
+    # Latest position per device per method
+    "rssi_positions": {},
+    "fp_positions":   {},
+    "device_status": {},     # {device_id: {reachable, last_scan}}
+    "raw":           None,   # last RawSnapshot dict
+    "logs":          [],     # List[{timestamp, severity, device_id, message}]
     "status": {
         "last_update":     None,
         "total_decisions": 0,
@@ -211,42 +226,51 @@ def _severity(conf: Optional[float]) -> str:
     return "WARN" if conf < 0.5 else "INFO"
 
 
-def _record_decision(d: LocalizationDecision) -> None:
-    """Commit a verdict to in-memory state, CSV, and S3."""
-    payload = {
-        "_id":         d.decision_id,
-        "device_id":   d.device_id,
-        "campus_id":   d.campus_id,
-        "building_id": d.building_id,
-        "floor_id":    d.floor_id,
-        "room_id":     d.room_id,
-        "timestamp":   d.timestamp,
-        "confidence":  d.confidence,
-        "rssi_vector": d.rssi_vector,
-        "x":           d.x,
-        "y":           d.y,
-        "scan_number": d.scan_number,
-    }
-    _state["decisions"].append(payload)
-    if len(_state["decisions"]) > MAX_DECISIONS:
-        _state["decisions"] = _state["decisions"][-MAX_DECISIONS:]
+def _store_decision(d: LocalizationDecision, method_key: str) -> None:
+    """
+    Commit a verdict to the per-method ring, positions dict, and S3/CSV.
 
-    _state["positions"][d.device_id] = {
-        "x": d.x, "y": d.y,
-        "room_id":   d.room_id,
-        "timestamp": d.timestamp,
+    method_key: "rssi_decisions" | "fp_decisions" | "ble_decisions" | "tof_decisions"
+    """
+    payload = {
+        "_id":                  d.decision_id,
+        "device_id":            d.device_id,
+        "campus_id":            d.campus_id,
+        "building_id":          d.building_id,
+        "floor_id":             d.floor_id,
+        "room_id":              d.room_id,
+        "timestamp":            d.timestamp,
+        "confidence":           d.confidence,
+        "rssi_vector":          d.rssi_vector,
+        "x":                    d.x,
+        "y":                    d.y,
+        "scan_number":          d.scan_number,
+        "localization_method":  method_key.replace("_decisions", ""),
     }
+
+    ring = _state[method_key]
+    ring.append(payload)
+    if len(ring) > MAX_DECISIONS:
+        _state[method_key] = ring[-MAX_DECISIONS:]
+
+    pos_key = method_key.replace("decisions", "positions")
+    if pos_key in _state:
+        _state[pos_key][d.device_id] = {
+            "x": d.x, "y": d.y,
+            "room_id":   d.room_id,
+            "timestamp": d.timestamp,
+        }
+
     _state["status"].update({
         "last_update":     d.timestamp,
         "total_decisions": _state["status"]["total_decisions"] + 1,
         "last_device_id":  d.device_id,
     })
     _append_log(_severity(d.confidence), d.device_id,
-                f"{d.device_id} -> {d.room_id} ({d.confidence:.2f})")
+                f"[{method_key.replace('_decisions','')}] {d.device_id} -> {d.room_id} ({d.confidence:.2f})")
 
     cfg = _state.get("cfg") or {}
-    env: Optional[FloorEnvironment] = _state.get("env")
-    cloud_cfg = cfg.get("cloud", {})
+    cloud_cfg    = cfg.get("cloud", {})
     csv_path     = cloud_cfg.get("csv_log_path", "telemetry_log.csv")
     s3_template  = cloud_cfg.get("s3_key_template", "{campus}_{building}_{floor}_latest.json")
     cloud_io.log_to_csv(payload, csv_path)
@@ -259,8 +283,9 @@ def _record_decision(d: LocalizationDecision) -> None:
 
 async def _poll_loop() -> None:
     """
-    Core async loop — replaces the threaded telemetry_agent.py main_loop().
-    Polls all APs via TelnetPipe, buffers scans, emits verdicts on schedule.
+    Core async loop.
+    Shared RSSI pipe feeds BOTH trilateration (every cycle, as preview) and
+    fingerprinting (verdict window only, when a radiomap exists).
     """
     cfg = _state.get("cfg")
     env: Optional[FloorEnvironment] = _state.get("env")
@@ -270,20 +295,24 @@ async def _poll_loop() -> None:
 
     _state["poll_running"] = True
     tc            = cfg.get("telemetry_config", {})
-    poll_interval = float(tc.get("poll_interval_s",  3.0))
+    # Default halved to 1.5 s; can still be overridden in config.yaml
+    poll_interval = float(tc.get("poll_interval_s", 1.5))
     update_int    = float(tc.get("update_interval_s", 60.0))
     prompts       = tc.get("prompts", {"main": "eap350>", "sub": "eap350/wless2/network>"})
-    loc_method    = cfg.get("system", {}).get("localization_method", "trilateration")
+    testing_mode  = bool(cfg.get("system", {}).get("testing_mode", False))
     target_ssids  = [t.ssid for t in env.targets]
 
     # Build engine wrappers
     rssi_wrapper = RSSIEngineWrapper(env, cfg)
 
     fp_wrapper: Optional[FingerprintWrapper] = None
-    if loc_method == "fingerprinting":
-        rm_template   = cfg.get("cloud", {}).get("radiomap_path", "radiomap_{campus}_{building}_{floor}.json")
-        radiomap_path = cloud_io.resolve_radiomap_path(rm_template, env.campus_id, env.building_id, env.floor_id)
-        fp_wrapper    = FingerprintWrapper(radiomap_path)
+    rm_template   = cfg.get("cloud", {}).get("radiomap_path", "radiomap_{campus}_{building}_{floor}.json")
+    radiomap_path = cloud_io.resolve_radiomap_path(rm_template, env.campus_id, env.building_id, env.floor_id)
+    if radiomap_path and Path(radiomap_path).exists():
+        fp_wrapper = FingerprintWrapper(radiomap_path)
+        log.info("Fingerprinting enabled (radiomap: %s)", radiomap_path)
+    else:
+        log.info("Fingerprinting disabled (no radiomap at %s)", radiomap_path)
 
     # Build pipes
     telnet_pipe = TelnetPipe(
@@ -303,10 +332,16 @@ async def _poll_loop() -> None:
     await telnet_pipe.connect()
     await mqtt_pipe.connect()
 
-    scan_buffer: list      = []
-    last_verdict = asyncio.get_event_loop().time()
+    scan_buffer: list    = []
+    last_verdict         = asyncio.get_event_loop().time()
+    required_ap_ids      = set(env.wifi_aps.keys())
+    # In testing mode, 1 AP is enough for a valid scan; otherwise all APs must report
+    min_aps_for_valid    = 1 if testing_mode else len(env.wifi_aps)
 
-    log.info("Poll loop started  method=%s  targets=%s", loc_method, target_ssids)
+    log.info(
+        "Poll loop started  poll=%.1fs  verdict_window=%.0fs  testing=%s  targets=%s",
+        poll_interval, update_int, testing_mode, target_ssids,
+    )
 
     try:
         async for rssi_map in telnet_pipe.stream():
@@ -321,30 +356,30 @@ async def _poll_loop() -> None:
                     }
 
             # Raw snapshot for UI
-            expected = len(env.wifi_aps)
             present  = len(rssi_map)
+            expected = len(env.wifi_aps)
             _state["raw"] = {
-                "timestamp":   _now(),
-                "scan_number": n,
-                "aps_present": present,
-                "aps_expected":expected,
-                "complete":    present >= expected,
-                "results":     rssi_map,
+                "timestamp":    _now(),
+                "scan_number":  n,
+                "aps_present":  present,
+                "aps_expected": expected,
+                "complete":     present >= min_aps_for_valid,
+                "testing_mode": testing_mode,
+                "results":      rssi_map,
             }
 
-            # Console preview (trilateration mode only)
-            if loc_method == "trilateration":
-                for d in rssi_wrapper.process_cycle(rssi_map, scan_number=n):
-                    log.info("[Raw #%d] %s -> %s (%.2f)  (%.2f, %.2f)",
-                             n, d.device_id, d.room_id, d.confidence, d.x, d.y)
+            # ── Trilateration preview (every scan cycle) ──────────────────
+            for d in rssi_wrapper.process_cycle(rssi_map, scan_number=n):
+                log.info("[Trilat #%d] %s -> %s (%.2f)  (%.2f, %.2f)",
+                         n, d.device_id, d.room_id, d.confidence, d.x, d.y)
 
             scan_buffer.append(rssi_map)
 
-            # Verdict window
+            # ── Verdict window ─────────────────────────────────────────────
             if asyncio.get_event_loop().time() - last_verdict >= update_int:
                 await _run_verdict(
                     scan_buffer, env, rssi_wrapper, fp_wrapper,
-                    loc_method, target_ssids, n,
+                    target_ssids, required_ap_ids, min_aps_for_valid, n,
                 )
                 scan_buffer  = []
                 last_verdict = asyncio.get_event_loop().time()
@@ -358,26 +393,27 @@ async def _poll_loop() -> None:
 
 
 async def _run_verdict(
-    scan_buffer: list,
-    env: FloorEnvironment,
-    rssi_wrapper: RSSIEngineWrapper,
-    fp_wrapper: Optional[FingerprintWrapper],
-    loc_method: str,
-    target_ssids: List[str],
-    scan_counter: int,
+    scan_buffer:      list,
+    env:              FloorEnvironment,
+    rssi_wrapper:     RSSIEngineWrapper,
+    fp_wrapper:       Optional[FingerprintWrapper],
+    target_ssids:     List[str],
+    required_ap_ids:  set,
+    min_aps_for_valid: int,
+    scan_counter:     int,
 ) -> None:
-    """Aggregate the scan buffer and emit final localization decisions."""
-    required_ap_ids = set(env.wifi_aps.keys())
-    timestamp       = _now()
-
+    """
+    Aggregate the scan buffer and emit final localization decisions.
+    Runs BOTH trilateration AND fingerprinting (when available).
+    """
+    timestamp = _now()
     log.info("=" * 55 + "  VERDICT")
 
     for ssid in target_ssids:
+        # Collect scans where enough APs saw this SSID
         complete_scans = [
             s for s in scan_buffer
-            if required_ap_ids.issubset(
-                {ap for ap, devs in s.items() if ssid in devs}
-            )
+            if sum(1 for ap, devs in s.items() if ssid in devs) >= min_aps_for_valid
         ]
 
         total  = len(scan_buffer)
@@ -399,9 +435,20 @@ async def _run_verdict(
                 averaged[ap_id][ssid] = sum(vals) / len(vals)
         averaged = dict(averaged)
 
+        # ── Trilateration verdict ─────────────────────────────────────────
         dec_id = str(uuid.uuid4())
+        for d in rssi_wrapper.process_cycle(
+            averaged,
+            scan_number = scan_counter,
+            timestamp   = timestamp,
+            decision_id = dec_id,
+        ):
+            _store_decision(d, "rssi_decisions")
+            log.info("VERDICT [trilat]  %s -> %s  conf=%.2f  (%.2f, %.2f)",
+                     d.device_id, d.room_id, d.confidence, d.x, d.y)
 
-        if loc_method == "fingerprinting" and fp_wrapper:
+        # ── Fingerprinting verdict ────────────────────────────────────────
+        if fp_wrapper:
             live_vec = {
                 ap_id: averaged[ap_id][ssid]
                 for ap_id in averaged if ssid in averaged.get(ap_id, {})
@@ -409,7 +456,7 @@ async def _run_verdict(
             room, conf = fp_wrapper.match(live_vec)
             if room not in ("Outside Defined Area", "Undetected"):
                 d = LocalizationDecision(
-                    decision_id = dec_id,
+                    decision_id = str(uuid.uuid4()),
                     device_id   = ssid,
                     campus_id   = env.campus_id,
                     building_id = env.building_id,
@@ -421,18 +468,8 @@ async def _run_verdict(
                     x=0.0, y=0.0,
                     scan_number = scan_counter,
                 )
-                _record_decision(d)
-                log.info("VERDICT  %s -> %s  conf=%.2f", ssid, room, conf)
-        else:
-            for d in rssi_wrapper.process_cycle(
-                averaged,
-                scan_number = scan_counter,
-                timestamp   = timestamp,
-                decision_id = dec_id,
-            ):
-                _record_decision(d)
-                log.info("VERDICT  %s -> %s  conf=%.2f  (%.2f, %.2f)",
-                         d.device_id, d.room_id, d.confidence, d.x, d.y)
+                _store_decision(d, "fp_decisions")
+                log.info("VERDICT [fp]  %s -> %s  conf=%.2f", ssid, room, conf)
 
 
 # ---------------------------------------------------------------------------
@@ -442,6 +479,38 @@ async def _run_verdict(
 @app.get("/health")
 def get_health():
     return {"ok": True, "time": _now(), "poll_running": _state["poll_running"]}
+
+
+@app.post("/poll/start")
+async def start_poll():
+    """Start the background poll loop (if not already running)."""
+    global _poll_task
+    if _state["poll_running"]:
+        return {"ok": True, "message": "Already running"}
+    cfg = _state.get("cfg")
+    if cfg is None:
+        cfg = _load_cfg_from_disk()
+        if cfg:
+            _apply_cfg(cfg)
+    if cfg is None:
+        raise HTTPException(503, "No config loaded — POST /config first")
+    _poll_task = asyncio.create_task(_poll_loop(), name="poll_loop")
+    return {"ok": True, "message": "Poll loop started"}
+
+
+@app.post("/poll/stop")
+async def stop_poll():
+    """Stop the background poll loop."""
+    global _poll_task
+    if _poll_task and not _poll_task.done():
+        _poll_task.cancel()
+        try:
+            await _poll_task
+        except asyncio.CancelledError:
+            pass
+        _poll_task = None
+        return {"ok": True, "message": "Poll loop stopped"}
+    return {"ok": True, "message": "Not running"}
 
 
 @app.get("/")
@@ -500,15 +569,59 @@ async def upload_config(file: UploadFile = File(...)):
     return {"ok": True, "received_at": _now()}
 
 
+# ── Decisions — combined + per-method ────────────────────────────────────────
+
 @app.get("/decisions")
 def get_decisions(limit: int = 50):
-    items = _state["decisions"][-limit:]
+    """
+    Returns trilateration decisions by default (backward-compatible).
+    Falls back to CSV if the in-memory ring is empty.
+    """
+    items = _state["rssi_decisions"][-limit:]
     if not items:
         cfg      = _state.get("cfg") or {}
         csv_path = cfg.get("cloud", {}).get("csv_log_path", "telemetry_log.csv")
         items = list(cloud_io.read_csv_decisions(csv_path, limit))
     return {"count": len(items), "items": items}
 
+
+@app.get("/decisions/trilateration")
+def get_decisions_trilateration(limit: int = Query(50, ge=1, le=500)):
+    items = _state["rssi_decisions"][-limit:]
+    return {"method": "trilateration", "count": len(items), "items": items}
+
+
+@app.get("/decisions/fingerprinting")
+def get_decisions_fingerprinting(limit: int = Query(50, ge=1, le=500)):
+    items = _state["fp_decisions"][-limit:]
+    return {"method": "fingerprinting", "count": len(items), "items": items}
+
+
+@app.get("/decisions/ble")
+def get_decisions_ble(limit: int = Query(50, ge=1, le=500)):
+    """BLE localization — stub. Populated by external BLE pipeline if available."""
+    items = _state["ble_decisions"][-limit:]
+    return {
+        "method":  "ble",
+        "count":   len(items),
+        "items":   items,
+        "note":    "BLE pipeline not yet active; data populated externally when BLE anchors are present.",
+    }
+
+
+@app.get("/decisions/tof")
+def get_decisions_tof(limit: int = Query(50, ge=1, le=500)):
+    """ToF localization — stub. Populated by MQTT pipeline when ToF anchors are configured."""
+    items = _state["tof_decisions"][-limit:]
+    return {
+        "method":  "tof",
+        "count":   len(items),
+        "items":   items,
+        "note":    "ToF pipeline reads from MQTT; data appears here when ToF anchors report.",
+    }
+
+
+# ── Devices ───────────────────────────────────────────────────────────────────
 
 @app.get("/devices")
 def get_devices():
@@ -525,6 +638,8 @@ def get_devices():
     return {"items": items}
 
 
+# ── Raw scan ──────────────────────────────────────────────────────────────────
+
 @app.get("/raw")
 def get_raw():
     if not _state["raw"]:
@@ -532,11 +647,13 @@ def get_raw():
     return _state["raw"]
 
 
+# ── Logs ──────────────────────────────────────────────────────────────────────
+
 @app.get("/logs")
 def get_logs(
-    limit: int = 200,
+    limit:    int           = 200,
     severity: Optional[str] = None,
-    q: Optional[str] = None,
+    q:        Optional[str] = None,
 ):
     items = list(_state["logs"])
     if severity:
@@ -546,8 +663,14 @@ def get_logs(
     return {"count": len(items), "items": items[-limit:]}
 
 
+# ── Map — per-method ──────────────────────────────────────────────────────────
+
 @app.get("/map")
-def get_map():
+def get_map(method: str = Query("trilateration", description="trilateration | fingerprinting | ble | tof")):
+    """
+    Returns room polygons + latest device positions for the requested method.
+    Use ?method=trilateration (default) | fingerprinting | ble | tof.
+    """
     env: Optional[FloorEnvironment] = _state.get("env")
     rooms   = []
     floor_w = floor_h = None
@@ -557,16 +680,25 @@ def get_map():
         floor_h = env.height_m
         rooms   = [{"name": r.name, "polygon": r.polygon} for r in env.rooms]
 
+    # Choose the right positions dict
+    pos_map = {
+        "trilateration": _state["rssi_positions"],
+        "fingerprinting": _state["fp_positions"],
+        "ble":  {},
+        "tof":  {},
+    }.get(method, _state["rssi_positions"])
+
     devices = [
         {
             "device_id": dev, **pos,
             "reachable": _state["device_status"].get(dev, {}).get("reachable", False),
+            "method":    method,
         }
-        for dev, pos in _state["positions"].items()
+        for dev, pos in pos_map.items()
     ]
 
-    # Fallback to CSV if nothing in memory yet
-    if not devices:
+    # Fallback to CSV if nothing in memory (trilateration only)
+    if not devices and method == "trilateration":
         cfg      = _state.get("cfg") or {}
         csv_path = cfg.get("cloud", {}).get("csv_log_path", "telemetry_log.csv")
         for row in cloud_io.read_csv_decisions(csv_path, limit=1):
@@ -579,15 +711,19 @@ def get_map():
                     "room_id":   row.get("room_id"),
                     "timestamp": row.get("timestamp"),
                     "reachable": False,
+                    "method":    "trilateration",
                     "source":    "csv",
                 })
 
     return {
+        "method":  method,
         "floor":   {"width_m": floor_w, "height_m": floor_h},
         "rooms":   rooms,
         "devices": devices,
     }
 
+
+# ── Survey / fingerprint calibration ──────────────────────────────────────────
 
 @app.post("/survey/{room_label}")
 def post_survey(room_label: str, payload: Dict[str, Any]):

@@ -10,46 +10,93 @@
         theme: {
           extend: {
             colors: {
-              ink: '#3d3929',
-              'ink-secondary': '#6b6456',
-              panel: '#faf9f5',
-              surface: '#f3f0e8',
-              'surface-dim': '#ebe7dd',
-              accent: '#ae5630',
-              'accent-dim': '#944a29',
-              'accent-light': '#ae563018',
-              success: '#2e7d5b',
-              warn: '#b8860b',
-              danger: '#c0392b',
-              muted: '#8b8579',
-              sidebar: '#2f2f2f',
-              'sidebar-hover': '#3a3a3a',
-              'sidebar-active': '#454545',
-              'sidebar-text': '#a3a3a3',
-              'sidebar-text-active': '#e8e8e8',
-              border: '#ddd8cc',
-              'border-dim': '#cec8ba',
+              ink: "#3d3929",
+              "ink-secondary": "#6b6456",
+              panel: "#faf9f5",
+              surface: "#f3f0e8",
+              "surface-dim": "#ebe7dd",
+              accent: "#ae5630",
+              "accent-dim": "#944a29",
+              "accent-light": "#ae563018",
+              success: "#2e7d5b",
+              warn: "#b8860b",
+              danger: "#c0392b",
+              muted: "#8b8579",
+              sidebar: "#2f2f2f",
+              "sidebar-hover": "#3a3a3a",
+              "sidebar-active": "#454545",
+              "sidebar-text": "#a3a3a3",
+              "sidebar-text-active": "#e8e8e8",
+              border: "#ddd8cc",
+              "border-dim": "#cec8ba",
             },
           },
         },
       };
     </script>
     <style>
-      @import url('https://fonts.googleapis.com/css2?family=Crimson+Pro:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
-      body { font-family: 'Inter', system-ui, sans-serif; }
-      h1, h2, h3 { font-family: 'Crimson Pro', 'Georgia', serif; }
-      code, .mono { font-family: 'JetBrains Mono', monospace; }
-      .fade-in { animation: fadeIn 0.25s ease-out; }
-      @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
-      .pulse-dot { animation: pulse 2s infinite; }
-      @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
-      svg text { user-select: none; }
-      ::selection { background: #ae563040; }
-      input:focus, select:focus, textarea:focus { box-shadow: 0 0 0 2px #ae563030; }
-      ::-webkit-scrollbar { width: 6px; }
-      ::-webkit-scrollbar-track { background: transparent; }
-      ::-webkit-scrollbar-thumb { background: #cec8ba; border-radius: 3px; }
-      ::-webkit-scrollbar-thumb:hover { background: #b5ae9f; }
+      @import url("https://fonts.googleapis.com/css2?family=Crimson+Pro:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap");
+      body {
+        font-family: "Inter", system-ui, sans-serif;
+      }
+      h1,
+      h2,
+      h3 {
+        font-family: "Crimson Pro", "Georgia", serif;
+      }
+      code,
+      .mono {
+        font-family: "JetBrains Mono", monospace;
+      }
+      .fade-in {
+        animation: fadeIn 0.25s ease-out;
+      }
+      @keyframes fadeIn {
+        from {
+          opacity: 0;
+          transform: translateY(6px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+      .pulse-dot {
+        animation: pulse 2s infinite;
+      }
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.35;
+        }
+      }
+      svg text {
+        user-select: none;
+      }
+      ::selection {
+        background: #ae563040;
+      }
+      input:focus,
+      select:focus,
+      textarea:focus {
+        box-shadow: 0 0 0 2px #ae563030;
+      }
+      ::-webkit-scrollbar {
+        width: 6px;
+      }
+      ::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #cec8ba;
+        border-radius: 3px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: #b5ae9f;
+      }
     </style>
   </head>
   <body class="bg-surface text-ink min-h-screen antialiased">
@@ -57,6 +104,12 @@
 
     <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script>
+      if (window.pdfjsLib)
+        pdfjsLib.GlobalWorkerOptions.workerSrc =
+          "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+    </script>
 
     <script>
       const React = window.React;
@@ -143,6 +196,8 @@
         // Anchors
         listAnchors: (fid) => api(PLATFORM_API, `/floors/${fid}/anchors`),
         listAllAnchors: (p) => api(PLATFORM_API, "/anchors", { params: p }),
+        registerAnchor: (d) =>
+          api(PLATFORM_API, "/anchors", { method: "POST", body: d }),
         createAnchor: (fid, d) =>
           api(PLATFORM_API, `/floors/${fid}/anchors`, {
             method: "POST",
@@ -168,6 +223,18 @@
             method: "POST",
             body: { acknowledged_by: by },
           }),
+        // Engine logs (stored in platform DB by background tasks)
+        listEngineLogs: (p) => api(PLATFORM_API, "/engine-logs", { params: p }),
+        ackEngineLog: (id, by) =>
+          api(PLATFORM_API, `/engine-logs/${id}/ack`, {
+            method: "POST",
+            body: { acknowledged_by: by },
+          }),
+        clearEngineLogs: (hours) =>
+          api(PLATFORM_API, "/engine-logs", {
+            method: "DELETE",
+            params: hours != null ? { older_than_hours: hours } : {},
+          }),
         // Config / Engine
         generateConfig: (p) =>
           api(PLATFORM_API, "/config/generate", { method: "POST", params: p }),
@@ -175,15 +242,65 @@
           api(PLATFORM_API, "/engine/start", { method: "POST", params: p }),
         stopEngine: () => api(PLATFORM_API, "/engine/stop", { method: "POST" }),
         engineStatus: () => api(PLATFORM_API, "/engine/status"),
+        // Floor Plan Editor
+        getEditorData: (fid) => api(PLATFORM_API, `/floors/${fid}/editor-data`),
+        saveEditorData: (fid, d) =>
+          api(PLATFORM_API, `/floors/${fid}/editor-data`, {
+            method: "PUT",
+            body: d,
+          }),
+        syncEditorRooms: (fid, d) =>
+          api(PLATFORM_API, `/floors/${fid}/editor-sync-rooms`, {
+            method: "POST",
+            body: d,
+          }),
+        copyFloorplan: (fid, srcId) =>
+          api(PLATFORM_API, `/floors/${fid}/copy-from/${srcId}`, {
+            method: "POST",
+          }),
+        uploadEditorPdf: async (fid, file) => {
+          const fd = new FormData();
+          fd.append("file", file);
+          const res = await fetch(`${PLATFORM_API}/floors/${fid}/editor-pdf`, {
+            method: "POST",
+            body: fd,
+          });
+          if (!res.ok) {
+            const t = await res.text();
+            throw new Error(t);
+          }
+          return res.json();
+        },
+        getEditorPdfUrl: (fid) => `${PLATFORM_API}/floors/${fid}/editor-pdf`,
+        deleteEditorPdf: (fid) =>
+          api(PLATFORM_API, `/floors/${fid}/editor-pdf`, { method: "DELETE" }),
+        // Access Levels
+        listAccessLevels: (bid) =>
+          api(PLATFORM_API, `/buildings/${bid}/access-levels`),
+        createAccessLevel: (bid, d) =>
+          api(PLATFORM_API, `/buildings/${bid}/access-levels`, {
+            method: "POST",
+            body: d,
+          }),
+        updateAccessLevel: (id, d) =>
+          api(PLATFORM_API, `/access-levels/${id}`, {
+            method: "PATCH",
+            body: d,
+          }),
+        deleteAccessLevel: (id) =>
+          api(PLATFORM_API, `/access-levels/${id}`, { method: "DELETE" }),
       };
 
       const engine = {
         health: () => api(ENGINE_API, "/health"),
         status: () => api(ENGINE_API, "/status"),
-        map: () => api(ENGINE_API, "/map"),
+        map: (method) =>
+          api(ENGINE_API, "/map", { params: method ? { method } : {} }),
         devices: () => api(ENGINE_API, "/devices"),
         decisions: (limit) =>
           api(ENGINE_API, "/decisions", { params: { limit } }),
+        decisionsByMethod: (method, limit) =>
+          api(ENGINE_API, `/decisions/${method}`, { params: { limit } }),
         raw: () => api(ENGINE_API, "/raw"),
         logs: (p) => api(ENGINE_API, "/logs", { params: p }),
       };
@@ -220,8 +337,10 @@
           "inline-flex items-center justify-center font-medium rounded-md transition-all duration-150 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-accent disabled:opacity-40 disabled:cursor-not-allowed";
         const variants = {
           primary: "bg-accent text-white hover:bg-accent-dim shadow-sm",
-          secondary: "bg-surface-dim text-ink border border-border hover:bg-panel",
-          danger: "bg-red-50 text-danger border border-red-200 hover:bg-red-100",
+          secondary:
+            "bg-surface-dim text-ink border border-border hover:bg-panel",
+          danger:
+            "bg-red-50 text-danger border border-red-200 hover:bg-red-100",
           ghost: "text-ink-secondary hover:bg-surface-dim hover:text-ink",
         };
         const sizes = {
@@ -256,7 +375,10 @@
           label &&
             h(
               "label",
-              { className: "block text-xs font-medium text-ink-secondary mb-1.5 uppercase tracking-wide" },
+              {
+                className:
+                  "block text-xs font-medium text-ink-secondary mb-1.5 uppercase tracking-wide",
+              },
               label,
             ),
           h("input", {
@@ -319,14 +441,23 @@
         );
       }
 
-      function EmptyState({ icon = "\uD83D\uDCED", title, description, action }) {
+      function EmptyState({
+        icon = "\uD83D\uDCED",
+        title,
+        description,
+        action,
+      }) {
         return h(
           "div",
           { className: "text-center py-14" },
           h("div", { className: "text-3xl mb-3 opacity-60" }, icon),
           h("h3", { className: "font-medium text-ink mb-1" }, title),
           description &&
-            h("p", { className: "text-sm text-muted mb-4 max-w-xs mx-auto" }, description),
+            h(
+              "p",
+              { className: "text-sm text-muted mb-4 max-w-xs mx-auto" },
+              description,
+            ),
           action,
         );
       }
@@ -429,6 +560,7 @@
 
       const PAGES = [
         { id: "wizard", label: "Setup", icon: "\u2699\uFE0F" },
+        { id: "localize", label: "Localization", icon: "\uD83C\uDFF7\uFE0F" },
         { id: "map", label: "Map", icon: "\uD83D\uDDFA\uFE0F" },
         { id: "devices", label: "Devices", icon: "\uD83D\uDCE1" },
         { id: "logs", label: "Logs", icon: "\uD83D\uDCCB" },
@@ -447,7 +579,11 @@
             { className: "px-5 py-5" },
             h(
               "div",
-              { className: "text-sidebar-text-active text-lg font-semibold tracking-tight", style: { fontFamily: "'Crimson Pro', Georgia, serif" } },
+              {
+                className:
+                  "text-sidebar-text-active text-lg font-semibold tracking-tight",
+                style: { fontFamily: "'Crimson Pro', Georgia, serif" },
+              },
               "IPS Platform",
             ),
             h(
@@ -519,7 +655,13 @@
       // PAGE: SETUP WIZARD
       // ═════════════════════════════════════════════════════════════════════
 
-      const WIZARD_STEPS = ["Campus", "Building", "Floor", "Rooms", "Anchors"];
+      const WIZARD_STEPS = [
+        "Campus",
+        "Building",
+        "Floor",
+        "Floor Plan",
+        "Anchors",
+      ];
 
       function SetupWizard() {
         const [step, setStep] = useState(0);
@@ -533,7 +675,11 @@
           h(
             "div",
             { className: "mb-6" },
-            h("h1", { className: "text-2xl font-semibold text-ink" }, "Setup Wizard"),
+            h(
+              "h1",
+              { className: "text-2xl font-semibold text-ink" },
+              "Setup Wizard",
+            ),
             h(
               "p",
               { className: "text-muted text-sm mt-1" },
@@ -606,8 +752,9 @@
               onBack: () => setStep(1),
             }),
           step === 3 &&
-            h(WizardRooms, {
+            h(FloorPlanEditor, {
               floor: selectedFloor,
+              building: selectedBuilding,
               onNext: () => setStep(4),
               onBack: () => setStep(2),
             }),
@@ -642,6 +789,22 @@
             alert(e.message);
           } finally {
             setCreating(false);
+          }
+        };
+
+        const handleDelete = async (c, e) => {
+          e.stopPropagation();
+          if (
+            !window.confirm(
+              `Delete campus "${c.name}" and all its buildings/floors/rooms/anchors? This cannot be undone.`,
+            )
+          )
+            return;
+          try {
+            await platform.deleteCampus(c.id);
+            reload();
+          } catch (e) {
+            alert(e.message);
           }
         };
 
@@ -693,29 +856,42 @@
                   { className: "space-y-2" },
                   data?.map((c) =>
                     h(
-                      "button",
+                      "div",
                       {
                         key: c.id,
                         onClick: () => onSelect(c),
                         className:
-                          "w-full flex items-center justify-between p-3 rounded-lg border border-border hover:border-accent hover:bg-accent-light transition-all duration-150 text-left group",
+                          "flex items-center gap-2 p-3 rounded-lg border border-border hover:border-accent hover:bg-accent-light transition-all duration-150 group cursor-pointer",
                       },
                       h(
                         "div",
-                        null,
+                        { className: "flex-1 min-w-0" },
                         h("div", { className: "font-medium text-sm" }, c.name),
                         c.description &&
                           h(
                             "div",
-                            { className: "text-xs text-muted mt-0.5" },
+                            { className: "text-xs text-muted mt-0.5 truncate" },
                             c.description,
                           ),
+                      ),
+                      h(
+                        "button",
+                        {
+                          onClick: (e) => {
+                            e.stopPropagation();
+                            handleDelete(c, e);
+                          },
+                          className:
+                            "text-muted hover:text-danger transition-colors flex-shrink-0 p-1",
+                          title: "Delete campus",
+                        },
+                        "\uD83D\uDDD1",
                       ),
                       h(
                         "span",
                         {
                           className:
-                            "text-muted group-hover:text-accent transition-colors",
+                            "text-muted group-hover:text-accent flex-shrink-0",
                         },
                         "\u2192",
                       ),
@@ -745,6 +921,22 @@
             alert(e.message);
           } finally {
             setCreating(false);
+          }
+        };
+
+        const handleDelete = async (b, e) => {
+          e.stopPropagation();
+          if (
+            !window.confirm(
+              `Delete building "${b.name}" and all its floors/rooms/anchors?`,
+            )
+          )
+            return;
+          try {
+            await platform.deleteBuilding(b.id);
+            reload();
+          } catch (e) {
+            alert(e.message);
           }
         };
 
@@ -811,18 +1003,36 @@
                     { className: "space-y-2" },
                     data?.map((b) =>
                       h(
-                        "button",
+                        "div",
                         {
                           key: b.id,
                           onClick: () => onSelect(b),
                           className:
-                            "w-full flex items-center justify-between p-3 rounded-lg border border-border hover:border-accent hover:bg-accent-light transition-all duration-150 text-left group",
+                            "flex items-center gap-2 p-3 rounded-lg border border-border hover:border-accent hover:bg-accent-light transition-all duration-150 group cursor-pointer",
                         },
-                        h("div", { className: "font-medium text-sm" }, b.name),
+                        h(
+                          "div",
+                          { className: "flex-1 font-medium text-sm" },
+                          b.name,
+                        ),
+                        h(
+                          "button",
+                          {
+                            onClick: (e) => {
+                              e.stopPropagation();
+                              handleDelete(b, e);
+                            },
+                            className:
+                              "text-muted hover:text-danger transition-colors flex-shrink-0 p-1",
+                            title: "Delete building",
+                          },
+                          "\uD83D\uDDD1",
+                        ),
                         h(
                           "span",
                           {
-                            className: "text-muted group-hover:text-accent",
+                            className:
+                              "text-muted group-hover:text-accent flex-shrink-0",
                           },
                           "\u2192",
                         ),
@@ -846,6 +1056,22 @@
           height_m: 15,
         });
         const [creating, setCreating] = useState(false);
+
+        const handleDeleteFloor = async (f, e) => {
+          e.stopPropagation();
+          if (
+            !window.confirm(
+              `Delete floor "${f.name}" and all its rooms and anchors?`,
+            )
+          )
+            return;
+          try {
+            await platform.deleteFloor(f.id);
+            reload();
+          } catch (e) {
+            alert(e.message);
+          }
+        };
 
         const handleCreate = async () => {
           if (!form.name.trim()) return;
@@ -957,16 +1183,16 @@
                     { className: "space-y-2" },
                     data?.map((f) =>
                       h(
-                        "button",
+                        "div",
                         {
                           key: f.id,
                           onClick: () => onSelect(f),
                           className:
-                            "w-full flex items-center justify-between p-3 rounded-lg border border-border hover:border-accent hover:bg-accent-light transition-all duration-150 text-left group",
+                            "flex items-center gap-2 p-3 rounded-lg border border-border hover:border-accent hover:bg-accent-light transition-all duration-150 group cursor-pointer",
                         },
                         h(
                           "div",
-                          null,
+                          { className: "flex-1 min-w-0" },
                           h(
                             "div",
                             { className: "font-medium text-sm" },
@@ -979,9 +1205,23 @@
                           ),
                         ),
                         h(
+                          "button",
+                          {
+                            onClick: (e) => {
+                              e.stopPropagation();
+                              handleDeleteFloor(f, e);
+                            },
+                            className:
+                              "text-muted hover:text-danger transition-colors flex-shrink-0 p-1",
+                            title: "Delete floor",
+                          },
+                          "\uD83D\uDDD1",
+                        ),
+                        h(
                           "span",
                           {
-                            className: "text-muted group-hover:text-accent",
+                            className:
+                              "text-muted group-hover:text-accent flex-shrink-0",
                           },
                           "\u2192",
                         ),
@@ -990,234 +1230,1471 @@
                   ),
             ),
           ),
+          // Hint: floor plan editor is in the next step
+          data?.length > 0 &&
+            h(
+              "div",
+              {
+                className:
+                  "mt-4 p-3 bg-accent-light rounded-lg border border-accent/20 text-sm text-accent",
+              },
+              "Select a floor above to open the Floor Plan Editor where you can draw rooms, trace over PDFs, and set up fingerprint grids.",
+            ),
         );
       }
 
-      function WizardRooms({ floor, onNext, onBack }) {
-        const { data, loading, error, reload } = useApi(
-          () => platform.listRooms(floor.id),
-          [floor.id],
-        );
-        const [form, setForm] = useState({
-          name: "",
-          priority_label: "Standard",
-          localization_type: "rssi_section",
-          alert_on_exit: false,
-          polygon: "",
-        });
-        const [creating, setCreating] = useState(false);
+      // ── Floor Plan Editor ─────────────────────────────────────────────────
+      // Interactive SVG canvas: place points, draw lines, define rooms,
+      // trace over PDF backgrounds, fingerprint grid, access levels.
 
-        const handleCreate = async () => {
-          if (!form.name.trim()) return;
-          setCreating(true);
-          try {
-            let polygon = [];
-            if (form.polygon.trim()) {
-              try {
-                polygon = JSON.parse(form.polygon);
-              } catch {
-                alert(
-                  "Invalid polygon JSON. Use format: [[x1,y1],[x2,y2],...]",
-                );
+      let _fpId = 1;
+      const fpId = (pfx) => `${pfx}${_fpId++}`;
+
+      function FloorPlanEditor({ floor, building, onNext, onBack }) {
+        // Editor state
+        const [points, setPoints] = useState([]);
+        const [lines, setLines] = useState([]);
+        const [editorRooms, setEditorRooms] = useState([]);
+        const [tool, setTool] = useState("point");
+        const [selected, setSelected] = useState(null);
+        const [lineStart, setLineStart] = useState(null);
+        const [roomPts, setRoomPts] = useState([]);
+        const [pdfDataUrl, setPdfDataUrl] = useState(null);
+        const [pdfOpacity, setPdfOpacity] = useState(0.3);
+        const [pdfScale, setPdfScale] = useState(1.0);
+        const [pdfOffsetX, setPdfOffsetX] = useState(0);
+        const [pdfOffsetY, setPdfOffsetY] = useState(0);
+        const [hasPdf, setHasPdf] = useState(false);
+        const [accessLevels, setAccessLevels] = useState([]);
+        const [gridSize, setGridSize] = useState(
+          floor.default_grid_size_m || 1.0,
+        );
+        const [showGrid, setShowGrid] = useState(false);
+        const [showEditorGrid, setShowEditorGrid] = useState(true);
+        const [snapGrid, setSnapGrid] = useState(true);
+        const [saving, setSaving] = useState(false);
+        const [dirty, setDirty] = useState(false);
+        const [editLength, setEditLength] = useState("");
+        const [roomName, setRoomName] = useState("");
+        const [alForm, setAlForm] = useState({ name: "", color: "#6b7280" });
+        const [copyFloorId, setCopyFloorId] = useState("");
+        const [allFloors, setAllFloors] = useState([]);
+        const [dragPt, setDragPt] = useState(null);
+        const [dragStart, setDragStart] = useState(null);
+
+        const svgRef = useRef(null);
+        const [dims, setDims] = useState({ w: 900, h: 600 });
+
+        const fw = floor.width_m || 20;
+        const fh = floor.height_m || 15;
+        const PADDING = 40;
+
+        // Responsive sizing
+        useEffect(() => {
+          const ro = new ResizeObserver((entries) => {
+            for (const e of entries) {
+              const w = e.contentRect.width;
+              if (w > 0) {
+                const aspect = fh / fw;
+                setDims({ w, h: Math.max(350, w * aspect) });
+              }
+            }
+          });
+          if (svgRef.current?.parentElement)
+            ro.observe(svgRef.current.parentElement);
+          return () => ro.disconnect();
+        }, [fw, fh]);
+
+        const scaleX = (dims.w - PADDING * 2) / fw;
+        const scaleY = (dims.h - PADDING * 2) / fh;
+        const sc = Math.min(scaleX, scaleY);
+        const tx = (v) => PADDING + v * sc;
+        const ty = (v) => PADDING + v * sc;
+        const fromSvgX = (px) => (px - PADDING) / sc;
+        const fromSvgY = (py) => (py - PADDING) / sc;
+
+        const SNAP = 0.15; // metres
+        const snapToPoint = (wx, wy) => {
+          for (const p of points) {
+            if (Math.abs(p.x - wx) < SNAP && Math.abs(p.y - wy) < SNAP)
+              return p;
+          }
+          return null;
+        };
+
+        // Snap coordinates to nearest grid intersection
+        const snapToGrid = (wx, wy) => {
+          if (!snapGrid)
+            return {
+              x: Math.round(wx * 100) / 100,
+              y: Math.round(wy * 100) / 100,
+            };
+          const gs = gridSize;
+          return {
+            x: Math.round(wx / gs) * gs,
+            y: Math.round(wy / gs) * gs,
+          };
+        };
+
+        // Apply right-angle constraint from a reference point
+        const applyRightAngle = (wx, wy, refX, refY) => {
+          const dx = Math.abs(wx - refX);
+          const dy = Math.abs(wy - refY);
+          if (dx > dy) return { x: wx, y: refY }; // more horizontal → lock Y
+          return { x: refX, y: wy }; // more vertical → lock X
+        };
+
+        // Load data on mount
+        useEffect(() => {
+          platform
+            .getEditorData(floor.id)
+            .then((res) => {
+              const d = res.data || {};
+              if (d.points?.length) {
+                setPoints(d.points);
+                _fpId =
+                  Math.max(
+                    _fpId,
+                    ...d.points.map(
+                      (p) => parseInt(p.id.replace(/\D/g, "")) || 0,
+                    ),
+                  ) + 1;
+              }
+              if (d.lines?.length) {
+                setLines(d.lines);
+                _fpId =
+                  Math.max(
+                    _fpId,
+                    ...d.lines.map(
+                      (l) => parseInt(l.id.replace(/\D/g, "")) || 0,
+                    ),
+                  ) + 1;
+              }
+              if (d.rooms?.length) {
+                setEditorRooms(d.rooms);
+                _fpId =
+                  Math.max(
+                    _fpId,
+                    ...d.rooms.map(
+                      (r) => parseInt(r.id.replace(/\D/g, "")) || 0,
+                    ),
+                  ) + 1;
+              }
+              if (res.default_grid_size_m) setGridSize(res.default_grid_size_m);
+              setHasPdf(!!res.has_pdf);
+            })
+            .catch(() => {});
+          if (building) {
+            platform
+              .listAccessLevels(building.id)
+              .then(setAccessLevels)
+              .catch(() => {});
+            platform
+              .listFloors(building.id)
+              .then((f) => setAllFloors(f.filter((fl) => fl.id !== floor.id)))
+              .catch(() => {});
+          }
+        }, [floor.id]);
+
+        // Load PDF background
+        useEffect(() => {
+          if (!hasPdf) return;
+          const url = platform.getEditorPdfUrl(floor.id);
+          if (window.pdfjsLib) {
+            pdfjsLib
+              .getDocument(url)
+              .promise.then((pdf) => pdf.getPage(1))
+              .then((page) => {
+                const vp = page.getViewport({ scale: 2 });
+                const canvas = document.createElement("canvas");
+                canvas.width = vp.width;
+                canvas.height = vp.height;
+                page
+                  .render({
+                    canvasContext: canvas.getContext("2d"),
+                    viewport: vp,
+                  })
+                  .promise.then(() => {
+                    setPdfDataUrl(canvas.toDataURL("image/png"));
+                  });
+              })
+              .catch(() => {});
+          }
+        }, [hasPdf, floor.id]);
+
+        // Mark dirty on changes
+        const markDirty = () => setDirty(true);
+
+        // SVG click handler
+        const handleSvgClick = (e) => {
+          if (dragPt) return; // was a drag, not a click
+          const svgEl = svgRef.current;
+          if (!svgEl) return;
+          const rect = svgEl.getBoundingClientRect();
+          const wx = fromSvgX(((e.clientX - rect.left) / rect.width) * dims.w);
+          const wy = fromSvgY(((e.clientY - rect.top) / rect.height) * dims.h);
+
+          if (wx < 0 || wx > fw || wy < 0 || wy > fh) return;
+
+          if (tool === "point") {
+            const existing = snapToPoint(wx, wy);
+            if (existing) {
+              setSelected({ type: "point", id: existing.id });
+              return;
+            }
+            const snapped = snapToGrid(wx, wy);
+            const np = {
+              id: fpId("p"),
+              x: Math.max(0, Math.min(fw, snapped.x)),
+              y: Math.max(0, Math.min(fh, snapped.y)),
+            };
+            setPoints((prev) => [...prev, np]);
+            setSelected({ type: "point", id: np.id });
+            markDirty();
+          } else if (tool === "line") {
+            // Compute snapped position: right-angle from lineStart, then grid snap
+            let tx2 = wx,
+              ty2 = wy;
+            const startPt = lineStart
+              ? points.find((p) => p.id === lineStart)
+              : null;
+            if (startPt) {
+              const ra = applyRightAngle(wx, wy, startPt.x, startPt.y);
+              tx2 = ra.x;
+              ty2 = ra.y;
+            }
+            const gs2 = snapToGrid(tx2, ty2);
+            tx2 = Math.max(0, Math.min(fw, gs2.x));
+            ty2 = Math.max(0, Math.min(fh, gs2.y));
+
+            // Prefer an existing nearby point; otherwise create one at snapped pos
+            let hit = snapToPoint(tx2, ty2) || snapToPoint(wx, wy);
+            if (!hit) {
+              if (!lineStart) {
+                // No start yet and no existing point nearby — create one at grid snap
+                hit = { id: fpId("p"), x: tx2, y: ty2 };
+                setPoints((prev) => [...prev, hit]);
+                markDirty();
+              } else {
+                // Have a start — create endpoint at right-angle + grid snap
+                hit = { id: fpId("p"), x: tx2, y: ty2 };
+                setPoints((prev) => [...prev, hit]);
+                markDirty();
+              }
+            }
+
+            if (!lineStart) {
+              setLineStart(hit.id);
+            } else if (hit.id !== lineStart) {
+              const pA = points.find((p) => p.id === lineStart) || startPt;
+              const nl = {
+                id: fpId("l"),
+                from: lineStart,
+                to: hit.id,
+                length_m: pA
+                  ? Math.round(Math.hypot(hit.x - pA.x, hit.y - pA.y) * 100) /
+                    100
+                  : 0,
+              };
+              setLines((prev) => [...prev, nl]);
+              setSelected({ type: "line", id: nl.id });
+              setEditLength(String(nl.length_m));
+              setLineStart(null);
+              markDirty();
+            }
+          } else if (tool === "room") {
+            const gs3 = snapToGrid(wx, wy);
+            const hit = snapToPoint(wx, wy) || snapToPoint(gs3.x, gs3.y);
+            if (!hit) return;
+            if (
+              roomPts.length > 0 &&
+              hit.id === roomPts[0] &&
+              roomPts.length >= 3
+            ) {
+              // Close the room
+              const name = prompt(
+                "Room name:",
+                `Room ${editorRooms.length + 1}`,
+              );
+              if (name) {
+                const nr = {
+                  id: fpId("r"),
+                  name,
+                  pointIds: [...roomPts],
+                  access_level_id: null,
+                  grid_size_override: null,
+                };
+                setEditorRooms((prev) => [...prev, nr]);
+                markDirty();
+              }
+              setRoomPts([]);
+            } else if (!roomPts.includes(hit.id)) {
+              setRoomPts((prev) => [...prev, hit.id]);
+            }
+          } else if (tool === "select") {
+            const hit = snapToPoint(wx, wy);
+            if (hit) {
+              setSelected({ type: "point", id: hit.id });
+              return;
+            }
+            // Check room hit
+            for (const rm of editorRooms) {
+              const poly = rm.pointIds
+                .map((pid) => points.find((p) => p.id === pid))
+                .filter(Boolean);
+              if (poly.length >= 3 && pointInPoly(wx, wy, poly)) {
+                setSelected({ type: "room", id: rm.id });
                 return;
               }
             }
-            await platform.createRoom(floor.id, {
-              ...form,
-              name: form.name.trim(),
-              polygon,
-              alert_on_exit: form.alert_on_exit,
-            });
-            setForm({
-              name: "",
-              priority_label: "Standard",
-              localization_type: "rssi_section",
-              alert_on_exit: false,
-              polygon: "",
-            });
-            reload();
-          } catch (e) {
-            alert(e.message);
-          } finally {
-            setCreating(false);
+            // Check line hit
+            for (const ln of lines) {
+              const pA = points.find((p) => p.id === ln.from);
+              const pB = points.find((p) => p.id === ln.to);
+              if (pA && pB && distToLine(wx, wy, pA, pB) < 0.3) {
+                setSelected({ type: "line", id: ln.id });
+                setEditLength(String(ln.length_m));
+                return;
+              }
+            }
+            setSelected(null);
+          } else if (tool === "delete") {
+            const hit = snapToPoint(wx, wy);
+            if (hit) {
+              setPoints((prev) => prev.filter((p) => p.id !== hit.id));
+              setLines((prev) =>
+                prev.filter((l) => l.from !== hit.id && l.to !== hit.id),
+              );
+              setEditorRooms((prev) =>
+                prev.filter((r) => !r.pointIds.includes(hit.id)),
+              );
+              setSelected(null);
+              markDirty();
+              return;
+            }
+            for (const ln of lines) {
+              const pA = points.find((p) => p.id === ln.from);
+              const pB = points.find((p) => p.id === ln.to);
+              if (pA && pB && distToLine(wx, wy, pA, pB) < 0.3) {
+                setLines((prev) => prev.filter((l) => l.id !== ln.id));
+                setSelected(null);
+                markDirty();
+                return;
+              }
+            }
+            for (const rm of editorRooms) {
+              const poly = rm.pointIds
+                .map((pid) => points.find((p) => p.id === pid))
+                .filter(Boolean);
+              if (poly.length >= 3 && pointInPoly(wx, wy, poly)) {
+                setEditorRooms((prev) => prev.filter((r) => r.id !== rm.id));
+                setSelected(null);
+                markDirty();
+                return;
+              }
+            }
           }
         };
 
-        if (loading) return h(LoadingSpinner);
-        if (error) return h(ErrorBanner, { message: error, onRetry: reload });
+        // Point dragging
+        const handleSvgMouseDown = (e) => {
+          if (tool !== "select") return;
+          const svgEl = svgRef.current;
+          if (!svgEl) return;
+          const rect = svgEl.getBoundingClientRect();
+          const wx = fromSvgX(((e.clientX - rect.left) / rect.width) * dims.w);
+          const wy = fromSvgY(((e.clientY - rect.top) / rect.height) * dims.h);
+          const hit = snapToPoint(wx, wy);
+          if (hit) {
+            setDragPt(hit.id);
+            setDragStart({ x: e.clientX, y: e.clientY });
+            e.preventDefault();
+          }
+        };
+        const handleSvgMouseMove = (e) => {
+          if (!dragPt) return;
+          const svgEl = svgRef.current;
+          if (!svgEl) return;
+          const rect = svgEl.getBoundingClientRect();
+          const wx = Math.max(
+            0,
+            Math.min(
+              fw,
+              fromSvgX(((e.clientX - rect.left) / rect.width) * dims.w),
+            ),
+          );
+          const wy = Math.max(
+            0,
+            Math.min(
+              fh,
+              fromSvgY(((e.clientY - rect.top) / rect.height) * dims.h),
+            ),
+          );
+          const dragSnapped = snapToGrid(wx, wy);
+          setPoints((prev) =>
+            prev.map((p) =>
+              p.id === dragPt
+                ? {
+                    ...p,
+                    x: dragSnapped.x,
+                    y: dragSnapped.y,
+                  }
+                : p,
+            ),
+          );
+        };
+        const handleSvgMouseUp = () => {
+          if (dragPt) {
+            markDirty();
+            setDragPt(null);
+            setDragStart(null);
+          }
+        };
+
+        // Geometry helpers
+        function pointInPoly(x, y, poly) {
+          let inside = false;
+          for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+            const xi = poly[i].x,
+              yi = poly[i].y,
+              xj = poly[j].x,
+              yj = poly[j].y;
+            if (
+              yi > y !== yj > y &&
+              x < ((xj - xi) * (y - yi)) / (yj - yi) + xi
+            )
+              inside = !inside;
+          }
+          return inside;
+        }
+        function distToLine(px, py, a, b) {
+          const dx = b.x - a.x,
+            dy = b.y - a.y;
+          const len2 = dx * dx + dy * dy;
+          if (len2 === 0) return Math.hypot(px - a.x, py - a.y);
+          let t = ((px - a.x) * dx + (py - a.y) * dy) / len2;
+          t = Math.max(0, Math.min(1, t));
+          return Math.hypot(px - (a.x + t * dx), py - (a.y + t * dy));
+        }
+        function polyArea(pts) {
+          let a = 0;
+          for (let i = 0; i < pts.length; i++) {
+            const j = (i + 1) % pts.length;
+            a += pts[i].x * pts[j].y - pts[j].x * pts[i].y;
+          }
+          return Math.abs(a / 2);
+        }
+
+        // Save
+        const handleSave = async () => {
+          setSaving(true);
+          try {
+            await platform.saveEditorData(floor.id, {
+              data: { points, lines, rooms: editorRooms },
+              default_grid_size_m: gridSize,
+            });
+            // Sync rooms to database
+            const dbRooms = editorRooms.map((r) => {
+              const poly = r.pointIds
+                .map((pid) => points.find((p) => p.id === pid))
+                .filter(Boolean)
+                .map((p) => [p.x, p.y]);
+              return {
+                editor_id: r.id,
+                name: r.name,
+                polygon: poly,
+                access_level_id: r.access_level_id,
+                grid_size_override: r.grid_size_override,
+              };
+            });
+            await platform.syncEditorRooms(floor.id, { rooms: dbRooms });
+            setDirty(false);
+          } catch (e) {
+            alert("Save failed: " + e.message);
+          } finally {
+            setSaving(false);
+          }
+        };
+
+        // PDF upload
+        const handlePdfUpload = async (e) => {
+          const file = e.target.files?.[0];
+          if (!file) return;
+          try {
+            await platform.uploadEditorPdf(floor.id, file);
+            setHasPdf(true);
+          } catch (err) {
+            alert("PDF upload failed: " + err.message);
+          }
+          e.target.value = "";
+        };
+
+        // Copy floor plan
+        const handleCopy = async () => {
+          if (!copyFloorId) return;
+          try {
+            await platform.copyFloorplan(floor.id, copyFloorId);
+            // Reload
+            const res = await platform.getEditorData(floor.id);
+            const d = res.data || {};
+            setPoints(d.points || []);
+            setLines(d.lines || []);
+            setEditorRooms(d.rooms || []);
+            setHasPdf(!!res.has_pdf);
+            setDirty(false);
+          } catch (e) {
+            alert("Copy failed: " + e.message);
+          }
+        };
+
+        // Access level CRUD
+        const handleCreateAL = async () => {
+          if (!alForm.name.trim() || !building) return;
+          try {
+            const al = await platform.createAccessLevel(building.id, alForm);
+            setAccessLevels((prev) => [...prev, al]);
+            setAlForm({ name: "", color: "#6b7280" });
+          } catch (e) {
+            alert(e.message);
+          }
+        };
+        const handleDeleteAL = async (id) => {
+          try {
+            await platform.deleteAccessLevel(id);
+            setAccessLevels((prev) => prev.filter((a) => a.id !== id));
+            setEditorRooms((prev) =>
+              prev.map((r) =>
+                r.access_level_id === id ? { ...r, access_level_id: null } : r,
+              ),
+            );
+            markDirty();
+          } catch (e) {
+            alert(e.message);
+          }
+        };
+
+        // Room colors
+        const ROOM_FILLS = [
+          "#3b82f620",
+          "#10b98120",
+          "#f59e0b20",
+          "#ef444420",
+          "#8b5cf620",
+          "#06b6d420",
+        ];
+        const ROOM_STROKES = [
+          "#3b82f6",
+          "#10b981",
+          "#f59e0b",
+          "#ef4444",
+          "#8b5cf6",
+          "#06b6d4",
+        ];
+
+        // Tool buttons
+        const TOOLS = [
+          { id: "select", label: "Select", icon: "\u25C7" },
+          { id: "point", label: "Point", icon: "\u25CF" },
+          { id: "line", label: "Line", icon: "\u2571" },
+          { id: "room", label: "Room", icon: "\u25A1" },
+          { id: "delete", label: "Delete", icon: "\u2715" },
+        ];
+
+        const selLine =
+          selected?.type === "line"
+            ? lines.find((l) => l.id === selected.id)
+            : null;
+        const selRoom =
+          selected?.type === "room"
+            ? editorRooms.find((r) => r.id === selected.id)
+            : null;
+        const selPoint =
+          selected?.type === "point"
+            ? points.find((p) => p.id === selected.id)
+            : null;
 
         return h(
           "div",
           { className: "fade-in" },
-          h(
-            "button",
-            {
-              onClick: onBack,
-              className:
-                "flex items-center gap-1 text-sm text-muted hover:text-accent mb-4",
-            },
-            "\u2190 Back to Floors",
-          ),
+          // Top bar
           h(
             "div",
             { className: "flex items-center justify-between mb-4" },
             h(
-              "div",
-              { className: "text-sm text-muted" },
-              `Floor: ${floor.name} (${floor.width_m}m \u00D7 ${floor.height_m}m)`,
+              "button",
+              {
+                onClick: onBack,
+                className:
+                  "flex items-center gap-1 text-sm text-muted hover:text-accent",
+              },
+              "\u2190 Back to Floors",
             ),
             h(
-              Button,
-              { onClick: onNext, variant: "primary" },
-              `Next: Anchors \u2192`,
+              "div",
+              { className: "flex items-center gap-3" },
+              dirty && h(Badge, { color: "yellow" }, "Unsaved changes"),
+              h(
+                Button,
+                {
+                  onClick: handleSave,
+                  disabled: saving,
+                  variant: "primary",
+                  size: "sm",
+                },
+                saving ? "Saving..." : "Save Floor Plan",
+              ),
+              h(
+                Button,
+                { onClick: onNext, variant: "secondary", size: "sm" },
+                "Next: Anchors \u2192",
+              ),
             ),
           ),
           h(
             "div",
-            { className: "grid grid-cols-1 lg:grid-cols-2 gap-6" },
-            h(
-              Card,
-              { title: "Add Room" },
+            { className: "text-sm text-muted mb-3" },
+            `${floor.name} \u2014 ${fw}m \u00D7 ${fh}m`,
+          ),
+
+          // Toolbar
+          h(
+            "div",
+            { className: "flex items-center gap-1 mb-3 flex-wrap" },
+            TOOLS.map((t) =>
               h(
-                "div",
-                { className: "space-y-3" },
-                h(Input, {
-                  label: "Room Name",
-                  value: form.name,
-                  onChange: (v) => setForm((f) => ({ ...f, name: v })),
-                  placeholder: "e.g. Room 101",
-                }),
-                h(
-                  "div",
-                  { className: "grid grid-cols-2 gap-3" },
-                  h(Select, {
-                    label: "Priority",
-                    value: form.priority_label,
-                    onChange: (v) =>
-                      setForm((f) => ({ ...f, priority_label: v })),
-                    options: [
-                      { value: "Standard", label: "Standard" },
-                      { value: "High", label: "High" },
-                      { value: "Critical", label: "Critical" },
-                    ],
-                  }),
-                  h(Select, {
-                    label: "Localization",
-                    value: form.localization_type,
-                    onChange: (v) =>
-                      setForm((f) => ({ ...f, localization_type: v })),
-                    options: [
-                      { value: "rssi_section", label: "RSSI Section" },
-                      { value: "high_accuracy", label: "High Accuracy" },
-                    ],
-                  }),
-                ),
-                h(
-                  "div",
-                  null,
-                  h(
-                    "label",
-                    {
-                      className: "block text-sm font-medium text-gray-700 mb-1",
-                    },
-                    "Polygon (JSON)",
-                  ),
-                  h("textarea", {
-                    value: form.polygon,
-                    onChange: (e) =>
-                      setForm((f) => ({ ...f, polygon: e.target.value })),
-                    placeholder: "[[0,0],[12,0],[12,8],[0,8]]",
-                    rows: 2,
-                    className:
-                      "w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:ring-2 focus:ring-accent focus:border-accent outline-none",
-                  }),
-                ),
-                h(
-                  "label",
-                  { className: "flex items-center gap-2 text-sm" },
-                  h("input", {
-                    type: "checkbox",
-                    checked: form.alert_on_exit,
-                    onChange: (e) =>
-                      setForm((f) => ({
-                        ...f,
-                        alert_on_exit: e.target.checked,
-                      })),
-                    className: "rounded",
-                  }),
-                  "Alert on exit",
-                ),
-                h(
-                  Button,
-                  {
-                    onClick: handleCreate,
-                    disabled: creating || !form.name.trim(),
+                "button",
+                {
+                  key: t.id,
+                  onClick: () => {
+                    setTool(t.id);
+                    setLineStart(null);
+                    setRoomPts([]);
                   },
-                  "Add Room",
-                ),
+                  className: `px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                    tool === t.id
+                      ? "bg-accent text-white shadow-sm"
+                      : "bg-surface-dim text-ink-secondary hover:bg-panel border border-transparent hover:border-border"
+                  }`,
+                },
+                `${t.icon} ${t.label}`,
               ),
             ),
+            h("div", { className: "w-px h-6 bg-border mx-2" }),
             h(
-              Card,
-              { title: `Rooms (${data?.length || 0})` },
-              data?.length === 0
-                ? h(EmptyState, {
-                    icon: "\uD83D\uDEAA",
-                    title: "No rooms yet",
-                    description: "Define room boundaries with polygons",
-                  })
-                : h(
-                    "div",
-                    { className: "space-y-2" },
-                    data?.map((r) =>
+              "label",
+              {
+                className:
+                  "flex items-center gap-1.5 text-sm text-ink-secondary cursor-pointer",
+              },
+              h("input", {
+                type: "checkbox",
+                checked: showEditorGrid,
+                onChange: (e) => setShowEditorGrid(e.target.checked),
+                className: "rounded",
+              }),
+              "Grid",
+            ),
+            h(
+              "label",
+              {
+                className:
+                  "flex items-center gap-1.5 text-sm text-ink-secondary cursor-pointer ml-2",
+              },
+              h("input", {
+                type: "checkbox",
+                checked: snapGrid,
+                onChange: (e) => setSnapGrid(e.target.checked),
+                className: "rounded",
+              }),
+              "Snap",
+            ),
+            h(
+              "label",
+              {
+                className:
+                  "flex items-center gap-1.5 text-sm text-ink-secondary cursor-pointer ml-2",
+              },
+              h("input", {
+                type: "checkbox",
+                checked: showGrid,
+                onChange: (e) => setShowGrid(e.target.checked),
+                className: "rounded",
+              }),
+              "Fingerprint Grid",
+            ),
+            // Status hints
+            tool === "line" &&
+              lineStart &&
+              h(Badge, { color: "blue" }, "Click second point"),
+            tool === "room" &&
+              roomPts.length > 0 &&
+              h(
+                Badge,
+                { color: "purple" },
+                `${roomPts.length} pts \u2014 click first to close`,
+              ),
+          ),
+
+          // Main layout: canvas + side panel
+          h(
+            "div",
+            { className: "flex gap-4" },
+            // Canvas
+            h(
+              "div",
+              { className: "flex-1 min-w-0" },
+              h(
+                "svg",
+                {
+                  ref: svgRef,
+                  viewBox: `0 0 ${dims.w} ${dims.h}`,
+                  className:
+                    "w-full bg-panel rounded-lg border border-border cursor-crosshair",
+                  style: { maxHeight: 600 },
+                  onClick: handleSvgClick,
+                  onMouseDown: handleSvgMouseDown,
+                  onMouseMove: handleSvgMouseMove,
+                  onMouseUp: handleSvgMouseUp,
+                  onMouseLeave: handleSvgMouseUp,
+                },
+                // Background grid (snap grid lines)
+                ...(showEditorGrid
+                  ? Array.from(
+                      { length: Math.ceil(fw / gridSize) + 1 },
+                      (_, i) =>
+                        h("line", {
+                          key: `gx${i}`,
+                          x1: tx(i * gridSize),
+                          y1: ty(0),
+                          x2: tx(i * gridSize),
+                          y2: ty(fh),
+                          stroke: "#e5e7eb",
+                          strokeWidth: 0.5,
+                        }),
+                    )
+                  : []),
+                ...(showEditorGrid
+                  ? Array.from(
+                      { length: Math.ceil(fh / gridSize) + 1 },
+                      (_, i) =>
+                        h("line", {
+                          key: `gy${i}`,
+                          x1: tx(0),
+                          y1: ty(i * gridSize),
+                          x2: tx(fw),
+                          y2: ty(i * gridSize),
+                          stroke: "#e5e7eb",
+                          strokeWidth: 0.5,
+                        }),
+                    )
+                  : []),
+                // PDF background
+                pdfDataUrl &&
+                  h("image", {
+                    href: pdfDataUrl,
+                    x: tx(pdfOffsetX),
+                    y: ty(pdfOffsetY),
+                    width: fw * sc * pdfScale,
+                    height: fh * sc * pdfScale,
+                    preserveAspectRatio: "none",
+                    opacity: pdfOpacity,
+                  }),
+                // Floor boundary
+                h("rect", {
+                  x: tx(0),
+                  y: ty(0),
+                  width: fw * sc,
+                  height: fh * sc,
+                  fill: "none",
+                  stroke: "#374151",
+                  strokeWidth: 2,
+                  strokeDasharray: "6,3",
+                }),
+                // Axis labels
+                h(
+                  "text",
+                  {
+                    x: tx(fw / 2),
+                    y: dims.h - 6,
+                    textAnchor: "middle",
+                    className: "text-[10px] fill-gray-400",
+                  },
+                  `${fw}m`,
+                ),
+                h(
+                  "text",
+                  {
+                    x: 10,
+                    y: ty(fh / 2),
+                    textAnchor: "middle",
+                    className: "text-[10px] fill-gray-400",
+                    transform: `rotate(-90, 10, ${ty(fh / 2)})`,
+                  },
+                  `${fh}m`,
+                ),
+                // Rooms (filled polygons)
+                ...editorRooms.map((rm, ri) => {
+                  const poly = rm.pointIds
+                    .map((pid) => points.find((p) => p.id === pid))
+                    .filter(Boolean);
+                  if (poly.length < 3) return null;
+                  const pts = poly
+                    .map((p) => `${tx(p.x)},${ty(p.y)}`)
+                    .join(" ");
+                  const cx = poly.reduce((s, p) => s + p.x, 0) / poly.length;
+                  const cy = poly.reduce((s, p) => s + p.y, 0) / poly.length;
+                  const isSel =
+                    selected?.type === "room" && selected.id === rm.id;
+                  const alColor = rm.access_level_id
+                    ? accessLevels.find((a) => a.id === rm.access_level_id)
+                        ?.color
+                    : null;
+                  return h(
+                    "g",
+                    { key: rm.id },
+                    h("polygon", {
+                      points: pts,
+                      fill: alColor
+                        ? alColor + "30"
+                        : ROOM_FILLS[ri % ROOM_FILLS.length],
+                      stroke: isSel
+                        ? "#ae5630"
+                        : alColor || ROOM_STROKES[ri % ROOM_STROKES.length],
+                      strokeWidth: isSel ? 2.5 : 1.5,
+                    }),
+                    h(
+                      "text",
+                      {
+                        x: tx(cx),
+                        y: ty(cy),
+                        textAnchor: "middle",
+                        dominantBaseline: "central",
+                        className: "text-[11px] font-medium",
+                        fill: alColor || ROOM_STROKES[ri % ROOM_STROKES.length],
+                      },
+                      rm.name,
+                    ),
+                  );
+                }),
+                // Fingerprint grid overlay
+                showGrid &&
+                  editorRooms.map((rm, ri) => {
+                    const poly = rm.pointIds
+                      .map((pid) => points.find((p) => p.id === pid))
+                      .filter(Boolean);
+                    if (poly.length < 3) return null;
+                    const gs = rm.grid_size_override || gridSize;
+                    const xs = poly.map((p) => p.x),
+                      ys = poly.map((p) => p.y);
+                    const minX = Math.floor(Math.min(...xs) / gs) * gs;
+                    const maxX = Math.ceil(Math.max(...xs) / gs) * gs;
+                    const minY = Math.floor(Math.min(...ys) / gs) * gs;
+                    const maxY = Math.ceil(Math.max(...ys) / gs) * gs;
+                    const cells = [];
+                    for (let gx = minX; gx < maxX; gx += gs) {
+                      for (let gy = minY; gy < maxY; gy += gs) {
+                        const cx = gx + gs / 2,
+                          cy = gy + gs / 2;
+                        if (pointInPoly(cx, cy, poly)) {
+                          cells.push(
+                            h("rect", {
+                              key: `gc-${rm.id}-${gx}-${gy}`,
+                              x: tx(gx),
+                              y: ty(gy),
+                              width: gs * sc,
+                              height: gs * sc,
+                              fill: "none",
+                              stroke: "#8b5cf680",
+                              strokeWidth: 0.7,
+                              strokeDasharray: "2,2",
+                            }),
+                          );
+                          cells.push(
+                            h("circle", {
+                              key: `gd-${rm.id}-${gx}-${gy}`,
+                              cx: tx(cx),
+                              cy: ty(cy),
+                              r: 2,
+                              fill: "#8b5cf660",
+                            }),
+                          );
+                        }
+                      }
+                    }
+                    return h("g", { key: `grid-${rm.id}` }, ...cells);
+                  }),
+                // Room-in-progress outline
+                roomPts.length > 1 &&
+                  (() => {
+                    const poly = roomPts
+                      .map((pid) => points.find((p) => p.id === pid))
+                      .filter(Boolean);
+                    const pts = poly
+                      .map((p) => `${tx(p.x)},${ty(p.y)}`)
+                      .join(" ");
+                    return h("polyline", {
+                      points: pts,
+                      fill: "none",
+                      stroke: "#8b5cf6",
+                      strokeWidth: 2,
+                      strokeDasharray: "4,3",
+                    });
+                  })(),
+                // Lines
+                ...lines.map((ln) => {
+                  const pA = points.find((p) => p.id === ln.from);
+                  const pB = points.find((p) => p.id === ln.to);
+                  if (!pA || !pB) return null;
+                  const isSel =
+                    selected?.type === "line" && selected.id === ln.id;
+                  const mx = (pA.x + pB.x) / 2,
+                    my = (pA.y + pB.y) / 2;
+                  return h(
+                    "g",
+                    { key: ln.id },
+                    h("line", {
+                      x1: tx(pA.x),
+                      y1: ty(pA.y),
+                      x2: tx(pB.x),
+                      y2: ty(pB.y),
+                      stroke: isSel ? "#ae5630" : "#6b7280",
+                      strokeWidth: isSel ? 2.5 : 1.5,
+                    }),
+                    ln.length_m > 0 &&
                       h(
-                        "div",
+                        "text",
                         {
-                          key: r.id,
-                          className:
-                            "p-3 rounded-lg border border-border text-sm",
+                          x: tx(mx),
+                          y: ty(my) - 6,
+                          textAnchor: "middle",
+                          className: "text-[9px] font-mono",
+                          fill: "#374151",
                         },
-                        h(
-                          "div",
-                          { className: "flex items-center justify-between" },
-                          h("span", { className: "font-medium" }, r.name),
+                        `${ln.length_m}m`,
+                      ),
+                  );
+                }),
+                // Line-in-progress
+                lineStart &&
+                  (() => {
+                    const p = points.find((pt) => pt.id === lineStart);
+                    return p
+                      ? h("circle", {
+                          cx: tx(p.x),
+                          cy: ty(p.y),
+                          r: 8,
+                          fill: "none",
+                          stroke: "#ae5630",
+                          strokeWidth: 2,
+                          strokeDasharray: "3,2",
+                        })
+                      : null;
+                  })(),
+                // Points
+                ...points.map((p) => {
+                  const isSel =
+                    selected?.type === "point" && selected.id === p.id;
+                  const isRoomPt = roomPts.includes(p.id);
+                  return h(
+                    "g",
+                    { key: p.id },
+                    h("circle", {
+                      cx: tx(p.x),
+                      cy: ty(p.y),
+                      r: isSel ? 7 : 5,
+                      fill: isRoomPt
+                        ? "#8b5cf6"
+                        : isSel
+                          ? "#ae5630"
+                          : "#374151",
+                      stroke: "#fff",
+                      strokeWidth: 2,
+                    }),
+                    isSel &&
+                      h(
+                        "text",
+                        {
+                          x: tx(p.x),
+                          y: ty(p.y) - 10,
+                          textAnchor: "middle",
+                          className: "text-[8px] font-mono",
+                          fill: "#6b7280",
+                        },
+                        `(${p.x}, ${p.y})`,
+                      ),
+                  );
+                }),
+              ),
+            ),
+
+            // Side panel
+            h(
+              "div",
+              { className: "w-72 flex-shrink-0 space-y-3" },
+              // Selected element properties
+              selPoint &&
+                h(
+                  Card,
+                  { title: "Point" },
+                  h(
+                    "div",
+                    { className: "text-xs font-mono text-muted mb-2" },
+                    selPoint.id,
+                  ),
+                  h(
+                    "div",
+                    { className: "grid grid-cols-2 gap-2" },
+                    h(Input, {
+                      label: "X (m)",
+                      type: "number",
+                      value: selPoint.x,
+                      onChange: (v) => {
+                        setPoints((prev) =>
+                          prev.map((p) =>
+                            p.id === selPoint.id
+                              ? { ...p, x: parseFloat(v) || 0 }
+                              : p,
+                          ),
+                        );
+                        markDirty();
+                      },
+                    }),
+                    h(Input, {
+                      label: "Y (m)",
+                      type: "number",
+                      value: selPoint.y,
+                      onChange: (v) => {
+                        setPoints((prev) =>
+                          prev.map((p) =>
+                            p.id === selPoint.id
+                              ? { ...p, y: parseFloat(v) || 0 }
+                              : p,
+                          ),
+                        );
+                        markDirty();
+                      },
+                    }),
+                  ),
+                ),
+              selLine &&
+                h(
+                  Card,
+                  { title: "Line" },
+                  h(
+                    "div",
+                    { className: "text-xs font-mono text-muted mb-2" },
+                    `${selLine.from} \u2192 ${selLine.to}`,
+                  ),
+                  h(Input, {
+                    label: "Length (m)",
+                    type: "number",
+                    value: editLength,
+                    onChange: (v) => {
+                      setEditLength(v);
+                      const len = parseFloat(v);
+                      if (!isNaN(len) && len >= 0) {
+                        setLines((prev) =>
+                          prev.map((l) =>
+                            l.id === selLine.id ? { ...l, length_m: len } : l,
+                          ),
+                        );
+                        markDirty();
+                      }
+                    },
+                  }),
+                ),
+              selRoom &&
+                h(
+                  Card,
+                  { title: "Room" },
+                  h(Input, {
+                    label: "Name",
+                    value: selRoom.name,
+                    onChange: (v) => {
+                      setEditorRooms((prev) =>
+                        prev.map((r) =>
+                          r.id === selRoom.id ? { ...r, name: v } : r,
+                        ),
+                      );
+                      markDirty();
+                    },
+                  }),
+                  h(
+                    "div",
+                    { className: "mt-2" },
+                    h(Select, {
+                      label: "Access Level",
+                      value: selRoom.access_level_id || "",
+                      onChange: (v) => {
+                        setEditorRooms((prev) =>
+                          prev.map((r) =>
+                            r.id === selRoom.id
+                              ? {
+                                  ...r,
+                                  access_level_id: v ? parseInt(v) : null,
+                                }
+                              : r,
+                          ),
+                        );
+                        markDirty();
+                      },
+                      options: [
+                        { value: "", label: "None" },
+                        ...accessLevels.map((a) => ({
+                          value: a.id,
+                          label: a.name,
+                        })),
+                      ],
+                    }),
+                  ),
+                  h(
+                    "div",
+                    { className: "mt-2" },
+                    h(Input, {
+                      label: "Grid Override (m)",
+                      type: "number",
+                      value: selRoom.grid_size_override || "",
+                      placeholder: `Default: ${gridSize}`,
+                      onChange: (v) => {
+                        setEditorRooms((prev) =>
+                          prev.map((r) =>
+                            r.id === selRoom.id
+                              ? {
+                                  ...r,
+                                  grid_size_override: v ? parseFloat(v) : null,
+                                }
+                              : r,
+                          ),
+                        );
+                        markDirty();
+                      },
+                    }),
+                  ),
+                  h(
+                    "div",
+                    { className: "text-xs text-muted mt-2" },
+                    `${selRoom.pointIds.length} vertices \u00B7 ${polyArea(selRoom.pointIds.map((pid) => points.find((p) => p.id === pid)).filter(Boolean)).toFixed(1)}m\u00B2`,
+                  ),
+                ),
+
+              // Room list
+              h(
+                Card,
+                { title: `Rooms (${editorRooms.length})` },
+                editorRooms.length === 0
+                  ? h(
+                      "div",
+                      { className: "text-xs text-muted py-2" },
+                      "Use the Room tool to define rooms by clicking points",
+                    )
+                  : h(
+                      "div",
+                      { className: "space-y-1.5 max-h-48 overflow-y-auto" },
+                      editorRooms.map((rm, i) => {
+                        const al = rm.access_level_id
+                          ? accessLevels.find(
+                              (a) => a.id === rm.access_level_id,
+                            )
+                          : null;
+                        return h(
+                          "button",
+                          {
+                            key: rm.id,
+                            onClick: () =>
+                              setSelected({ type: "room", id: rm.id }),
+                            className: `w-full text-left px-2.5 py-1.5 rounded text-xs transition-colors ${
+                              selected?.id === rm.id
+                                ? "bg-accent-light border border-accent/30"
+                                : "hover:bg-surface-dim border border-transparent"
+                            }`,
+                          },
                           h(
                             "div",
                             { className: "flex items-center gap-2" },
-                            h(
-                              Badge,
-                              {
-                                color:
-                                  r.priority_label === "High" ||
-                                  r.priority_label === "Critical"
-                                    ? "red"
-                                    : "gray",
+                            h("span", {
+                              className:
+                                "w-2.5 h-2.5 rounded-full flex-shrink-0",
+                              style: {
+                                background:
+                                  al?.color ||
+                                  ROOM_STROKES[i % ROOM_STROKES.length],
                               },
-                              r.priority_label,
+                            }),
+                            h(
+                              "span",
+                              { className: "font-medium truncate" },
+                              rm.name,
                             ),
-                            r.alert_on_exit &&
-                              h(Badge, { color: "yellow" }, "Alert"),
+                            al &&
+                              h(
+                                "span",
+                                {
+                                  className: "text-muted ml-auto flex-shrink-0",
+                                },
+                                al.name,
+                              ),
                           ),
-                        ),
-                        r.polygon?.length > 0 &&
-                          h(
-                            "div",
-                            { className: "text-xs text-muted mt-1 font-mono" },
-                            `${r.polygon.length} vertices`,
-                          ),
+                        );
+                      }),
+                    ),
+              ),
+
+              // Access Levels
+              h(
+                Card,
+                { title: "Access Levels" },
+                h(
+                  "div",
+                  { className: "space-y-1.5 mb-3" },
+                  accessLevels.map((al) =>
+                    h(
+                      "div",
+                      {
+                        key: al.id,
+                        className: "flex items-center gap-2 text-xs",
+                      },
+                      h("span", {
+                        className: "w-3 h-3 rounded-full flex-shrink-0",
+                        style: { background: al.color },
+                      }),
+                      h("span", { className: "flex-1 truncate" }, al.name),
+                      h(
+                        "button",
+                        {
+                          onClick: () => handleDeleteAL(al.id),
+                          className: "text-muted hover:text-danger",
+                        },
+                        "\u2715",
                       ),
                     ),
                   ),
+                ),
+                h(
+                  "div",
+                  { className: "flex gap-1.5" },
+                  h("input", {
+                    type: "color",
+                    value: alForm.color,
+                    onChange: (e) =>
+                      setAlForm((f) => ({ ...f, color: e.target.value })),
+                    className:
+                      "w-8 h-8 rounded border border-border cursor-pointer",
+                  }),
+                  h("input", {
+                    type: "text",
+                    value: alForm.name,
+                    onChange: (e) =>
+                      setAlForm((f) => ({ ...f, name: e.target.value })),
+                    placeholder: "Level name",
+                    className:
+                      "flex-1 px-2 py-1 border border-border rounded text-xs bg-panel",
+                  }),
+                  h(
+                    Button,
+                    {
+                      size: "sm",
+                      onClick: handleCreateAL,
+                      disabled: !alForm.name.trim(),
+                    },
+                    "+",
+                  ),
+                ),
+              ),
+
+              // Settings
+              h(
+                Card,
+                { title: "Settings" },
+                h(Input, {
+                  label: "Default Grid Size (m)",
+                  type: "number",
+                  value: gridSize,
+                  onChange: (v) => {
+                    const n = parseFloat(v);
+                    if (n > 0) setGridSize(n);
+                  },
+                }),
+                h(
+                  "div",
+                  { className: "mt-3" },
+                  h(
+                    "div",
+                    {
+                      className:
+                        "text-xs font-medium text-ink-secondary mb-1.5 uppercase tracking-wide",
+                    },
+                    "PDF Background",
+                  ),
+                  h(
+                    "div",
+                    { className: "flex items-center gap-2" },
+                    h("input", {
+                      type: "file",
+                      accept: ".pdf",
+                      onChange: handlePdfUpload,
+                      className: "text-xs w-full",
+                    }),
+                  ),
+                  hasPdf &&
+                    h(
+                      "div",
+                      { className: "mt-2 space-y-2" },
+                      // Opacity
+                      h(
+                        "div",
+                        null,
+                        h(
+                          "label",
+                          { className: "text-xs text-muted" },
+                          `Opacity: ${Math.round(pdfOpacity * 100)}%`,
+                        ),
+                        h("input", {
+                          type: "range",
+                          min: 0,
+                          max: 1,
+                          step: 0.05,
+                          value: pdfOpacity,
+                          onChange: (e) =>
+                            setPdfOpacity(parseFloat(e.target.value)),
+                          className: "w-full",
+                        }),
+                      ),
+                      // Scale
+                      h(
+                        "div",
+                        null,
+                        h(
+                          "label",
+                          { className: "text-xs text-muted" },
+                          `Scale: ${pdfScale.toFixed(2)}\u00D7`,
+                        ),
+                        h("input", {
+                          type: "range",
+                          min: 0.1,
+                          max: 3.0,
+                          step: 0.05,
+                          value: pdfScale,
+                          onChange: (e) =>
+                            setPdfScale(parseFloat(e.target.value)),
+                          className: "w-full",
+                        }),
+                      ),
+                      // X / Y offset
+                      h(
+                        "div",
+                        { className: "grid grid-cols-2 gap-1" },
+                        h(
+                          "div",
+                          null,
+                          h(
+                            "div",
+                            { className: "text-xs text-muted mb-0.5" },
+                            "X Offset (m)",
+                          ),
+                          h("input", {
+                            type: "number",
+                            step: 0.5,
+                            value: pdfOffsetX,
+                            onChange: (e) =>
+                              setPdfOffsetX(parseFloat(e.target.value) || 0),
+                            className:
+                              "w-full px-1.5 py-1 border border-border rounded text-xs bg-panel",
+                          }),
+                        ),
+                        h(
+                          "div",
+                          null,
+                          h(
+                            "div",
+                            { className: "text-xs text-muted mb-0.5" },
+                            "Y Offset (m)",
+                          ),
+                          h("input", {
+                            type: "number",
+                            step: 0.5,
+                            value: pdfOffsetY,
+                            onChange: (e) =>
+                              setPdfOffsetY(parseFloat(e.target.value) || 0),
+                            className:
+                              "w-full px-1.5 py-1 border border-border rounded text-xs bg-panel",
+                          }),
+                        ),
+                      ),
+                      // Reset
+                      h(
+                        "button",
+                        {
+                          onClick: () => {
+                            setPdfScale(1.0);
+                            setPdfOffsetX(0);
+                            setPdfOffsetY(0);
+                          },
+                          className:
+                            "text-xs text-muted hover:text-accent transition-colors",
+                        },
+                        "Reset position",
+                      ),
+                    ),
+                ),
+                h(
+                  "div",
+                  { className: "mt-3" },
+                  h(
+                    "div",
+                    {
+                      className:
+                        "text-xs font-medium text-ink-secondary mb-1.5 uppercase tracking-wide",
+                    },
+                    "Copy from Floor",
+                  ),
+                  h(
+                    "div",
+                    { className: "flex gap-1.5" },
+                    h(
+                      "select",
+                      {
+                        value: copyFloorId,
+                        onChange: (e) => setCopyFloorId(e.target.value),
+                        className:
+                          "flex-1 px-2 py-1 border border-border rounded text-xs bg-panel",
+                      },
+                      h("option", { value: "" }, "Select floor..."),
+                      allFloors.map((f) =>
+                        h("option", { key: f.id, value: f.id }, f.name),
+                      ),
+                    ),
+                    h(
+                      Button,
+                      {
+                        size: "sm",
+                        onClick: handleCopy,
+                        disabled: !copyFloorId,
+                        variant: "secondary",
+                      },
+                      "Copy",
+                    ),
+                  ),
+                ),
+              ),
             ),
           ),
         );
       }
 
       function WizardAnchors({ floor, onBack }) {
+        // Anchors already placed on this floor
         const { data, loading, error, reload } = useApi(
           () => platform.listAnchors(floor.id),
           [floor.id],
         );
+        // Full inventory (for "From Inventory" tab)
+        const { data: allAnchors, reload: reloadInventory } = useApi(() =>
+          platform.listAllAnchors(),
+        );
+
+        const [mode, setMode] = useState("create"); // "create" | "assign"
+
+        // ── Create-new form ──────────────────────────────────────────────────
         const [form, setForm] = useState({
           anchor_id: "",
           anchor_type: "engenius_ap",
@@ -1229,6 +2706,52 @@
           password: "admin",
         });
         const [creating, setCreating] = useState(false);
+
+        // ── Assign-from-inventory form ───────────────────────────────────────
+        const [selectedId, setSelectedId] = useState("");
+        const [assignPos, setAssignPos] = useState({ x_m: 0, y_m: 0 });
+        const [assigning, setAssigning] = useState(false);
+
+        // Unassigned devices available to pick from
+        const inventory = (allAnchors || []).filter((a) => a.floor_id == null);
+        const selectedAnchor =
+          inventory.find((a) => String(a.id) === selectedId) || null;
+
+        // Reload both lists
+        const reloadAll = () => {
+          reload();
+          reloadInventory();
+        };
+
+        const handleDeleteAnchor = async (a) => {
+          if (
+            !window.confirm(
+              `Delete anchor "${a.anchor_id}"? This cannot be undone.`,
+            )
+          )
+            return;
+          try {
+            await platform.deleteAnchor(a.id);
+            reloadAll();
+          } catch (e) {
+            alert(e.message);
+          }
+        };
+
+        const handleUnassign = async (a) => {
+          if (
+            !window.confirm(
+              `Remove "${a.anchor_id}" from this floor and return it to inventory?`,
+            )
+          )
+            return;
+          try {
+            await platform.updateAnchor(a.id, { floor_id: null });
+            reloadAll();
+          } catch (e) {
+            alert(e.message);
+          }
+        };
 
         const handleCreate = async () => {
           if (!form.anchor_id.trim()) return;
@@ -1248,11 +2771,31 @@
               x_m: 0,
               y_m: 0,
             }));
-            reload();
+            reloadAll();
           } catch (e) {
             alert(e.message);
           } finally {
             setCreating(false);
+          }
+        };
+
+        const handleAssign = async () => {
+          if (!selectedId) return;
+          setAssigning(true);
+          try {
+            await platform.updateAnchor(+selectedId, {
+              floor_id: floor.id,
+              x_m: +assignPos.x_m,
+              y_m: +assignPos.y_m,
+              device_status: "in_use",
+            });
+            setSelectedId("");
+            setAssignPos({ x_m: 0, y_m: 0 });
+            reloadAll();
+          } catch (e) {
+            alert(e.message);
+          } finally {
+            setAssigning(false);
           }
         };
 
@@ -1269,7 +2812,7 @@
               className:
                 "flex items-center gap-1 text-sm text-muted hover:text-accent mb-4",
             },
-            "\u2190 Back to Rooms",
+            "\u2190 Back to Floor Plan",
           ),
           h(
             "div",
@@ -1284,42 +2827,84 @@
           h(
             "div",
             { className: "grid grid-cols-1 lg:grid-cols-2 gap-6" },
+
+            // ── Left: Add Anchor panel ─────────────────────────────────────
             h(
               Card,
-              { title: "Place Anchor" },
+              { title: "Add Anchor" },
+              // Tab toggle
               h(
                 "div",
-                { className: "space-y-3" },
+                {
+                  className:
+                    "flex mb-4 rounded-lg overflow-hidden border border-border text-sm font-medium",
+                },
+                h(
+                  "button",
+                  {
+                    onClick: () => setMode("create"),
+                    className: `flex-1 py-1.5 transition-colors ${mode === "create" ? "bg-accent text-white" : "bg-panel text-muted hover:bg-surface"}`,
+                  },
+                  "Create New",
+                ),
+                h(
+                  "button",
+                  {
+                    onClick: () => {
+                      setMode("assign");
+                      setSelectedId("");
+                    },
+                    className: `flex-1 py-1.5 transition-colors ${mode === "assign" ? "bg-accent text-white" : "bg-panel text-muted hover:bg-surface"}`,
+                  },
+                  `From Inventory${inventory.length > 0 ? ` (${inventory.length})` : ""}`,
+                ),
+              ),
+
+              // ── Create-new form ──────────────────────────────────────────
+              mode === "create" &&
                 h(
                   "div",
-                  { className: "grid grid-cols-2 gap-3" },
-                  h(Input, {
-                    label: "Anchor ID",
-                    value: form.anchor_id,
-                    onChange: (v) => setForm((f) => ({ ...f, anchor_id: v })),
-                    placeholder: "e.g. AP1",
-                  }),
-                  h(Select, {
-                    label: "Type",
-                    value: form.anchor_type,
-                    onChange: (v) => setForm((f) => ({ ...f, anchor_type: v })),
-                    options: [
-                      { value: "engenius_ap", label: "EnGenius AP" },
-                      { value: "esp32", label: "ESP32" },
-                    ],
-                  }),
-                ),
-                form.anchor_type === "engenius_ap" &&
+                  { className: "space-y-3" },
                   h(
                     "div",
                     { className: "grid grid-cols-2 gap-3" },
                     h(Input, {
-                      label: "IP Address",
-                      value: form.ip_address,
-                      onChange: (v) =>
-                        setForm((f) => ({ ...f, ip_address: v })),
-                      placeholder: "192.168.1.xxx",
+                      label: "Anchor ID",
+                      value: form.anchor_id,
+                      onChange: (v) => setForm((f) => ({ ...f, anchor_id: v })),
+                      placeholder: "e.g. AP1",
                     }),
+                    h(Select, {
+                      label: "Type",
+                      value: form.anchor_type,
+                      onChange: (v) =>
+                        setForm((f) => ({ ...f, anchor_type: v })),
+                      options: [
+                        { value: "engenius_ap", label: "EnGenius AP" },
+                        { value: "esp32", label: "ESP32" },
+                      ],
+                    }),
+                  ),
+                  form.anchor_type === "engenius_ap" &&
+                    h(
+                      "div",
+                      { className: "grid grid-cols-2 gap-3" },
+                      h(Input, {
+                        label: "IP Address",
+                        value: form.ip_address,
+                        onChange: (v) =>
+                          setForm((f) => ({ ...f, ip_address: v })),
+                        placeholder: "192.168.1.xxx",
+                      }),
+                      h(Input, {
+                        label: "MAC Address",
+                        value: form.mac_address,
+                        onChange: (v) =>
+                          setForm((f) => ({ ...f, mac_address: v })),
+                        placeholder: "AA:BB:CC:DD:EE:FF",
+                      }),
+                    ),
+                  form.anchor_type === "esp32" &&
                     h(Input, {
                       label: "MAC Address",
                       value: form.mac_address,
@@ -1327,60 +2912,179 @@
                         setForm((f) => ({ ...f, mac_address: v })),
                       placeholder: "AA:BB:CC:DD:EE:FF",
                     }),
-                  ),
-                form.anchor_type === "esp32" &&
-                  h(Input, {
-                    label: "MAC Address",
-                    value: form.mac_address,
-                    onChange: (v) => setForm((f) => ({ ...f, mac_address: v })),
-                    placeholder: "AA:BB:CC:DD:EE:FF",
-                  }),
-                h(
-                  "div",
-                  { className: "grid grid-cols-2 gap-3" },
-                  h(Input, {
-                    label: "X Position (m)",
-                    type: "number",
-                    value: form.x_m,
-                    onChange: (v) => setForm((f) => ({ ...f, x_m: v })),
-                  }),
-                  h(Input, {
-                    label: "Y Position (m)",
-                    type: "number",
-                    value: form.y_m,
-                    onChange: (v) => setForm((f) => ({ ...f, y_m: v })),
-                  }),
-                ),
-                form.anchor_type === "engenius_ap" &&
                   h(
                     "div",
                     { className: "grid grid-cols-2 gap-3" },
                     h(Input, {
-                      label: "Username",
-                      value: form.username,
-                      onChange: (v) => setForm((f) => ({ ...f, username: v })),
+                      label: "X Position (m)",
+                      type: "number",
+                      value: form.x_m,
+                      onChange: (v) => setForm((f) => ({ ...f, x_m: v })),
                     }),
                     h(Input, {
-                      label: "Password",
-                      type: "password",
-                      value: form.password,
-                      onChange: (v) => setForm((f) => ({ ...f, password: v })),
+                      label: "Y Position (m)",
+                      type: "number",
+                      value: form.y_m,
+                      onChange: (v) => setForm((f) => ({ ...f, y_m: v })),
                     }),
                   ),
-                h(
-                  Button,
-                  {
-                    onClick: handleCreate,
-                    disabled: creating || !form.anchor_id.trim(),
-                  },
-                  "Place Anchor",
+                  form.anchor_type === "engenius_ap" &&
+                    h(
+                      "div",
+                      { className: "grid grid-cols-2 gap-3" },
+                      h(Input, {
+                        label: "Username",
+                        value: form.username,
+                        onChange: (v) =>
+                          setForm((f) => ({ ...f, username: v })),
+                      }),
+                      h(Input, {
+                        label: "Password",
+                        type: "password",
+                        value: form.password,
+                        onChange: (v) =>
+                          setForm((f) => ({ ...f, password: v })),
+                      }),
+                    ),
+                  h(
+                    Button,
+                    {
+                      onClick: handleCreate,
+                      disabled: creating || !form.anchor_id.trim(),
+                    },
+                    "Place Anchor",
+                  ),
                 ),
-              ),
+
+              // ── From-inventory form ──────────────────────────────────────
+              mode === "assign" &&
+                h(
+                  "div",
+                  { className: "space-y-3" },
+                  inventory.length === 0
+                    ? h(
+                        "div",
+                        { className: "text-sm text-muted py-4 text-center" },
+                        "No unassigned devices in inventory.",
+                        h("br", null),
+                        h(
+                          "span",
+                          { className: "text-xs" },
+                          "Register devices in the Devices tab first.",
+                        ),
+                      )
+                    : h(
+                        "div",
+                        { className: "space-y-3" },
+                        h(
+                          "div",
+                          null,
+                          h(
+                            "div",
+                            {
+                              className:
+                                "text-xs font-medium text-ink-secondary mb-1.5 uppercase tracking-wide",
+                            },
+                            "Select Device",
+                          ),
+                          h(
+                            "select",
+                            {
+                              value: selectedId,
+                              onChange: (e) => setSelectedId(e.target.value),
+                              className:
+                                "w-full px-2 py-1.5 border border-border rounded text-sm bg-panel text-ink",
+                            },
+                            h("option", { value: "" }, "— Pick an anchor —"),
+                            inventory.map((a) =>
+                              h(
+                                "option",
+                                { key: a.id, value: String(a.id) },
+                                `${a.anchor_id}  (${a.anchor_type}${a.ip_address ? " · " + a.ip_address : ""}${a.mac_address ? " · " + a.mac_address : ""})`,
+                              ),
+                            ),
+                          ),
+                        ),
+                        selectedAnchor &&
+                          h(
+                            "div",
+                            {
+                              className:
+                                "p-2 rounded bg-surface text-xs space-y-0.5",
+                            },
+                            h(
+                              "div",
+                              null,
+                              h("span", { className: "text-muted" }, "Type: "),
+                              h(
+                                Badge,
+                                {
+                                  color:
+                                    selectedAnchor.anchor_type === "esp32"
+                                      ? "purple"
+                                      : "blue",
+                                },
+                                selectedAnchor.anchor_type,
+                              ),
+                            ),
+                            selectedAnchor.ip_address &&
+                              h(
+                                "div",
+                                null,
+                                h("span", { className: "text-muted" }, "IP: "),
+                                h(
+                                  "span",
+                                  { className: "font-mono" },
+                                  selectedAnchor.ip_address,
+                                ),
+                              ),
+                            selectedAnchor.mac_address &&
+                              h(
+                                "div",
+                                null,
+                                h("span", { className: "text-muted" }, "MAC: "),
+                                h(
+                                  "span",
+                                  { className: "font-mono" },
+                                  selectedAnchor.mac_address,
+                                ),
+                              ),
+                          ),
+                        h(
+                          "div",
+                          { className: "grid grid-cols-2 gap-3" },
+                          h(Input, {
+                            label: "X Position (m)",
+                            type: "number",
+                            value: assignPos.x_m,
+                            onChange: (v) =>
+                              setAssignPos((p) => ({ ...p, x_m: v })),
+                          }),
+                          h(Input, {
+                            label: "Y Position (m)",
+                            type: "number",
+                            value: assignPos.y_m,
+                            onChange: (v) =>
+                              setAssignPos((p) => ({ ...p, y_m: v })),
+                          }),
+                        ),
+                        h(
+                          Button,
+                          {
+                            onClick: handleAssign,
+                            disabled: assigning || !selectedId,
+                          },
+                          assigning ? "Assigning…" : "Assign to Floor",
+                        ),
+                      ),
+                ),
             ),
+
+            // ── Right: Placed Anchors panel ────────────────────────────────
             h(
               Card,
               { title: "Placed Anchors" },
-              data?.length === 0
+              !data || data.length === 0
                 ? h(EmptyState, {
                     icon: "\uD83D\uDCE1",
                     title: "No anchors placed yet",
@@ -1388,20 +3092,20 @@
                 : h(
                     "div",
                     { className: "space-y-2" },
-                    data?.map((a) =>
+                    data.map((a) =>
                       h(
                         "div",
                         {
                           key: a.id,
                           className:
-                            "p-3 rounded-lg border border-border text-sm flex items-center justify-between",
+                            "p-3 rounded-lg border border-border text-sm flex items-start justify-between gap-2",
                         },
                         h(
                           "div",
-                          null,
+                          { className: "flex-1 min-w-0" },
                           h(
                             "div",
-                            { className: "flex items-center gap-2" },
+                            { className: "flex items-center gap-2 flex-wrap" },
                             h(StatusDot, { status: a.status }),
                             h(
                               "span",
@@ -1420,24 +3124,45 @@
                           h(
                             "div",
                             { className: "text-xs text-muted mt-0.5" },
-                            `(${a.x_m}, ${a.y_m})m`,
+                            `(${a.x_m}, ${a.y_m}) m`,
                             a.ip_address ? ` \u00B7 ${a.ip_address}` : "",
                             a.mac_address ? ` \u00B7 ${a.mac_address}` : "",
                           ),
                         ),
+                        // Actions
                         h(
-                          "span",
+                          "div",
                           {
-                            className: `text-xs ${a.enabled ? "text-emerald-600" : "text-gray-400"}`,
+                            className: "flex items-center gap-1 flex-shrink-0",
                           },
-                          a.enabled ? "Enabled" : "Disabled",
+                          h(
+                            "button",
+                            {
+                              onClick: () => handleUnassign(a),
+                              className:
+                                "text-xs px-2 py-1 rounded border border-border text-muted hover:border-accent hover:text-accent transition-colors",
+                              title: "Remove from floor (keep in inventory)",
+                            },
+                            "Unassign",
+                          ),
+                          h(
+                            "button",
+                            {
+                              onClick: () => handleDeleteAnchor(a),
+                              className:
+                                "text-muted hover:text-danger transition-colors p-1",
+                              title: "Delete anchor permanently",
+                            },
+                            "\uD83D\uDDD1",
+                          ),
                         ),
                       ),
                     ),
                   ),
             ),
           ),
-          // Mini floor preview with anchors
+
+          // ── Mini floor preview ─────────────────────────────────────────────
           data?.length > 0 &&
             h(
               Card,
@@ -1464,6 +3189,8 @@
         rooms = [],
         anchors = [],
         devices = [],
+        showFpGrid = false,
+        gridSize = 1.0,
         className = "",
       }) {
         const PADDING = 40;
@@ -1604,6 +3331,71 @@
               ),
             );
           }),
+          // Fingerprint grid overlay (Map View toggle)
+          ...(showFpGrid
+            ? rooms.map((r, ri) => {
+                const poly = r.polygon;
+                if (!poly || poly.length < 3) return null;
+                const gs = r.grid_size_override || gridSize;
+                const xs = poly.map((p) => p[0]),
+                  ys = poly.map((p) => p[1]);
+                const minX = Math.floor(Math.min(...xs) / gs) * gs;
+                const maxX = Math.ceil(Math.max(...xs) / gs) * gs;
+                const minY = Math.floor(Math.min(...ys) / gs) * gs;
+                const maxY = Math.ceil(Math.max(...ys) / gs) * gs;
+                function pipArr(px, py, verts) {
+                  let inside = false;
+                  for (
+                    let i = 0, j = verts.length - 1;
+                    i < verts.length;
+                    j = i++
+                  ) {
+                    const xi = verts[i][0],
+                      yi = verts[i][1],
+                      xj = verts[j][0],
+                      yj = verts[j][1];
+                    if (
+                      yi > py !== yj > py &&
+                      px < ((xj - xi) * (py - yi)) / (yj - yi) + xi
+                    )
+                      inside = !inside;
+                  }
+                  return inside;
+                }
+                const cells = [];
+                for (let gx = minX; gx < maxX; gx += gs) {
+                  for (let gy = minY; gy < maxY; gy += gs) {
+                    const cx = gx + gs / 2,
+                      cy = gy + gs / 2;
+                    if (pipArr(cx, cy, poly)) {
+                      cells.push(
+                        h("rect", {
+                          key: `gc${ri}-${gx}-${gy}`,
+                          x: tx(gx),
+                          y: ty(gy),
+                          width: gs * scale,
+                          height: gs * scale,
+                          fill: "none",
+                          stroke: "#8b5cf680",
+                          strokeWidth: 0.7,
+                          strokeDasharray: "2,2",
+                        }),
+                      );
+                      cells.push(
+                        h("circle", {
+                          key: `gd${ri}-${gx}-${gy}`,
+                          cx: tx(cx),
+                          cy: ty(cy),
+                          r: 2,
+                          fill: "#8b5cf660",
+                        }),
+                      );
+                    }
+                  }
+                }
+                return h("g", { key: `fpg-${ri}` }, ...cells);
+              })
+            : []),
           // Anchors
           ...anchors.map((a, i) =>
             h(
@@ -1695,6 +3487,8 @@
         const [selectedFloor, setSelectedFloor] = useState(null);
         const [platformRooms, setPlatformRooms] = useState([]);
         const [platformAnchors, setPlatformAnchors] = useState([]);
+        const [showFpGrid, setShowFpGrid] = useState(false);
+        const [floorGridSize, setFloorGridSize] = useState(1.0);
 
         // Load hierarchy from platform
         const { data: campuses } = useApi(() => platform.listCampuses());
@@ -1738,6 +3532,7 @@
             .listAnchors(selectedFloor.id)
             .then((a) => setPlatformAnchors(a || []))
             .catch(() => {});
+          setFloorGridSize(selectedFloor.default_grid_size_m || 1.0);
         }, [selectedFloor?.id]);
 
         // Merge: prefer platform data, fallback to engine
@@ -1758,7 +3553,11 @@
             h(
               "div",
               null,
-              h("h1", { className: "text-2xl font-semibold text-ink" }, "Map View"),
+              h(
+                "h1",
+                { className: "text-2xl font-semibold text-ink" },
+                "Map View",
+              ),
               h(
                 "p",
                 { className: "text-muted text-sm mt-1" },
@@ -1813,6 +3612,21 @@
                   ),
                 ),
               ),
+            // Fingerprint Grid toggle
+            h(
+              "label",
+              {
+                className:
+                  "flex items-center gap-2 text-sm text-ink-secondary cursor-pointer ml-auto",
+              },
+              h("input", {
+                type: "checkbox",
+                checked: showFpGrid,
+                onChange: (e) => setShowFpGrid(e.target.checked),
+                className: "rounded",
+              }),
+              "Fingerprint Grid",
+            ),
           ),
           // Map canvas
           h(
@@ -1831,6 +3645,8 @@
                   rooms,
                   anchors,
                   devices,
+                  showFpGrid,
+                  gridSize: floorGridSize,
                 }),
           ),
           // Device summary cards
@@ -1896,7 +3712,11 @@
           h(
             "div",
             { className: "mb-6" },
-            h("h1", { className: "text-2xl font-semibold text-ink" }, "Devices"),
+            h(
+              "h1",
+              { className: "text-2xl font-semibold text-ink" },
+              "Devices",
+            ),
             h(
               "p",
               { className: "text-muted text-sm mt-1" },
@@ -1926,11 +3746,155 @@
         );
       }
 
+      // ── Device status / flag metadata ─────────────────────────────────────────
+
+      const DEVICE_STATUSES = [
+        { value: "in_stock", label: "In Stock", badgeColor: "gray" },
+        { value: "in_use", label: "In Use", badgeColor: "green" },
+        {
+          value: "deployment_in_progress",
+          label: "Deployment In Progress",
+          badgeColor: "yellow",
+        },
+        { value: "decommissioned", label: "Decommissioned", badgeColor: "red" },
+      ];
+
+      const ANCHOR_FLAGS = [
+        {
+          value: "needs_provision",
+          label: "Needs Provision",
+          badgeColor: "yellow",
+        },
+        {
+          value: "ready_to_deploy",
+          label: "Ready to Deploy",
+          badgeColor: "blue",
+        },
+        {
+          value: "admin_down",
+          label: "Administratively Down",
+          badgeColor: "red",
+        },
+        { value: "shutdown", label: "Shutdown", badgeColor: "red" },
+      ];
+
+      function DeviceStatusBadge({ value }) {
+        const meta = DEVICE_STATUSES.find((s) => s.value === value) || {
+          label: value,
+          badgeColor: "gray",
+        };
+        return h(Badge, { color: meta.badgeColor }, meta.label);
+      }
+
+      function FlagBadges({ flags }) {
+        if (!flags || flags.length === 0)
+          return h("span", { className: "text-muted text-xs" }, "—");
+        return h(
+          "div",
+          { className: "flex gap-1 flex-wrap" },
+          flags.map((f) => {
+            const meta = ANCHOR_FLAGS.find((af) => af.value === f) || {
+              label: f,
+              badgeColor: "gray",
+            };
+            return h(Badge, { key: f, color: meta.badgeColor }, meta.label);
+          }),
+        );
+      }
+
       function AnchorsTable() {
         const { data, loading, error, reload } = useApi(() =>
           platform.listAllAnchors(),
         );
         const [filter, setFilter] = useState("");
+        const [statusFilter, setStatusFilter] = useState("");
+        const [showRegister, setShowRegister] = useState(false);
+        const [editId, setEditId] = useState(null); // anchor.id being edited
+        const [editData, setEditData] = useState({});
+        const [saving, setSaving] = useState(false);
+
+        // Registration form state
+        const [form, setForm] = useState({
+          anchor_id: "",
+          anchor_type: "engenius_ap",
+          ip_address: "",
+          mac_address: "",
+          brand: "",
+          model: "",
+          device_status: "in_stock",
+          flags: [],
+          username: "admin",
+          password: "admin",
+        });
+        const [registering, setRegistering] = useState(false);
+
+        const handleRegister = async () => {
+          if (!form.anchor_id.trim()) return;
+          setRegistering(true);
+          try {
+            await platform.registerAnchor({
+              ...form,
+              anchor_id: form.anchor_id.trim(),
+            });
+            setForm({
+              anchor_id: "",
+              anchor_type: "engenius_ap",
+              ip_address: "",
+              mac_address: "",
+              brand: "",
+              model: "",
+              device_status: "in_stock",
+              flags: [],
+              username: "admin",
+              password: "admin",
+            });
+            setShowRegister(false);
+            reload();
+          } catch (e) {
+            alert(e.message);
+          } finally {
+            setRegistering(false);
+          }
+        };
+
+        const startEdit = (a) => {
+          setEditId(a.id);
+          setEditData({
+            device_status: a.device_status || "in_stock",
+            flags: a.flags || [],
+          });
+        };
+        const cancelEdit = () => {
+          setEditId(null);
+          setEditData({});
+        };
+        const saveEdit = async (a) => {
+          setSaving(true);
+          try {
+            await platform.updateAnchor(a.id, editData);
+            setEditId(null);
+            reload();
+          } catch (e) {
+            alert(e.message);
+          } finally {
+            setSaving(false);
+          }
+        };
+        const handleDelete = async (a) => {
+          if (!window.confirm(`Delete anchor "${a.anchor_id}"?`)) return;
+          try {
+            await platform.deleteAnchor(a.id);
+            reload();
+          } catch (e) {
+            alert(e.message);
+          }
+        };
+        const toggleFlag = (flag, current) => {
+          const next = current.includes(flag)
+            ? current.filter((f) => f !== flag)
+            : [...current, flag];
+          setEditData((d) => ({ ...d, flags: next }));
+        };
 
         if (loading) return h(LoadingSpinner);
         if (error)
@@ -1939,149 +3903,438 @@
             onRetry: reload,
           });
 
-        const items = (data || []).filter(
-          (a) =>
-            !filter ||
-            a.anchor_id.toLowerCase().includes(filter.toLowerCase()) ||
-            a.anchor_type.includes(filter.toLowerCase()),
-        );
+        const items = (data || []).filter((a) => {
+          const q = filter.toLowerCase();
+          const matchText =
+            !q ||
+            a.anchor_id.toLowerCase().includes(q) ||
+            (a.ip_address || "").includes(q) ||
+            (a.mac_address || "").toLowerCase().includes(q);
+          const matchStatus = !statusFilter || a.device_status === statusFilter;
+          return matchText && matchStatus;
+        });
+
+        const COLS = [
+          "ID",
+          "Type",
+          "IP",
+          "MAC",
+          "Device Status",
+          "Flags",
+          "Connectivity",
+          "Floor",
+          "Actions",
+        ];
 
         return h(
-          Card,
-          null,
+          "div",
+          { className: "space-y-4" },
+
+          // ── Register panel ──────────────────────────────────────────────
           h(
-            "div",
-            { className: "flex items-center justify-between mb-4" },
-            h(Input, {
-              placeholder: "Filter anchors...",
-              value: filter,
-              onChange: setFilter,
-              className: "w-64",
-            }),
-            h(
-              "span",
-              { className: "text-sm text-muted" },
-              `${items.length} anchors`,
-            ),
-          ),
-          items.length === 0
-            ? h(EmptyState, {
-                icon: "\uD83D\uDCE1",
-                title: "No anchors found",
-                description: "Add anchors through the Setup Wizard",
-              })
-            : h(
-                "div",
-                { className: "overflow-x-auto" },
-                h(
-                  "table",
-                  { className: "w-full text-sm" },
+            Card,
+            { title: "Register Anchor" },
+            !showRegister
+              ? h(
+                  "div",
+                  { className: "flex items-center justify-between" },
                   h(
-                    "thead",
-                    null,
+                    "p",
+                    { className: "text-sm text-muted" },
+                    "Add a device to the inventory without assigning it to a floor.",
+                  ),
+                  h(
+                    Button,
+                    { onClick: () => setShowRegister(true), size: "sm" },
+                    "+ Register",
+                  ),
+                )
+              : h(
+                  "div",
+                  { className: "space-y-3" },
+                  h(
+                    "div",
+                    { className: "grid grid-cols-2 gap-3" },
+                    h(Input, {
+                      label: "Anchor ID",
+                      value: form.anchor_id,
+                      onChange: (v) => setForm((f) => ({ ...f, anchor_id: v })),
+                      placeholder: "e.g. AP-STORE-01",
+                    }),
+                    h(Select, {
+                      label: "Type",
+                      value: form.anchor_type,
+                      onChange: (v) =>
+                        setForm((f) => ({ ...f, anchor_type: v })),
+                      options: [
+                        { value: "engenius_ap", label: "EnGenius AP" },
+                        { value: "esp32", label: "ESP32" },
+                      ],
+                    }),
+                    h(Input, {
+                      label: "IP Address",
+                      value: form.ip_address,
+                      onChange: (v) =>
+                        setForm((f) => ({ ...f, ip_address: v })),
+                      placeholder:
+                        form.anchor_type === "engenius_ap"
+                          ? "192.168.1.x"
+                          : "Optional",
+                    }),
+                    h(Input, {
+                      label: "MAC Address",
+                      value: form.mac_address,
+                      onChange: (v) =>
+                        setForm((f) => ({ ...f, mac_address: v })),
+                      placeholder: "AA:BB:CC:DD:EE:FF",
+                    }),
+                    h(Input, {
+                      label: "Brand",
+                      value: form.brand,
+                      onChange: (v) => setForm((f) => ({ ...f, brand: v })),
+                      placeholder: "e.g. EnGenius",
+                    }),
+                    h(Input, {
+                      label: "Model",
+                      value: form.model,
+                      onChange: (v) => setForm((f) => ({ ...f, model: v })),
+                      placeholder: "e.g. EWS360",
+                    }),
+                  ),
+                  h(
+                    "div",
+                    { className: "grid grid-cols-2 gap-3" },
+                    h(Select, {
+                      label: "Device Status",
+                      value: form.device_status,
+                      onChange: (v) =>
+                        setForm((f) => ({ ...f, device_status: v })),
+                      options: DEVICE_STATUSES.map((s) => ({
+                        value: s.value,
+                        label: s.label,
+                      })),
+                    }),
                     h(
-                      "tr",
-                      { className: "border-b border-border" },
-                      [
-                        "ID",
-                        "Type",
-                        "IP",
-                        "MAC",
-                        "Position",
-                        "Status",
-                        "Capabilities",
-                        "Last Polled",
-                      ].map((col) =>
-                        h(
-                          "th",
-                          {
-                            key: col,
-                            className:
-                              "text-left py-3 px-3 text-xs font-medium text-muted uppercase tracking-wider",
-                          },
-                          col,
+                      "div",
+                      null,
+                      h(
+                        "div",
+                        {
+                          className:
+                            "text-xs font-medium text-ink-secondary mb-1.5 uppercase tracking-wide",
+                        },
+                        "Flags",
+                      ),
+                      h(
+                        "div",
+                        { className: "flex flex-wrap gap-1.5" },
+                        ANCHOR_FLAGS.map((af) =>
+                          h(
+                            "label",
+                            {
+                              key: af.value,
+                              className:
+                                "flex items-center gap-1 text-xs cursor-pointer",
+                            },
+                            h("input", {
+                              type: "checkbox",
+                              checked: form.flags.includes(af.value),
+                              onChange: () => {
+                                const next = form.flags.includes(af.value)
+                                  ? form.flags.filter((x) => x !== af.value)
+                                  : [...form.flags, af.value];
+                                setForm((f) => ({ ...f, flags: next }));
+                              },
+                            }),
+                            af.label,
+                          ),
                         ),
                       ),
                     ),
                   ),
                   h(
-                    "tbody",
-                    null,
-                    items.map((a) =>
-                      h(
-                        "tr",
-                        {
-                          key: a.id,
-                          className:
-                            "border-b border-surface-dim hover:bg-surface-dim",
-                        },
-                        h(
-                          "td",
-                          { className: "py-3 px-3 font-mono font-medium" },
-                          a.anchor_id,
-                        ),
-                        h(
-                          "td",
-                          { className: "py-3 px-3" },
-                          h(
-                            Badge,
-                            {
-                              color:
-                                a.anchor_type === "esp32" ? "purple" : "blue",
-                            },
-                            a.anchor_type,
-                          ),
-                        ),
-                        h(
-                          "td",
-                          { className: "py-3 px-3 font-mono text-xs" },
-                          a.ip_address || "\u2014",
-                        ),
-                        h(
-                          "td",
-                          { className: "py-3 px-3 font-mono text-xs" },
-                          a.mac_address || "\u2014",
-                        ),
-                        h(
-                          "td",
-                          { className: "py-3 px-3 font-mono text-xs" },
-                          `(${a.x_m}, ${a.y_m})`,
-                        ),
-                        h(
-                          "td",
-                          { className: "py-3 px-3" },
-                          h(
-                            "div",
-                            { className: "flex items-center gap-1.5" },
-                            h(StatusDot, { status: a.status }),
-                            h("span", { className: "text-xs" }, a.status),
-                          ),
-                        ),
-                        h(
-                          "td",
-                          { className: "py-3 px-3" },
-                          h(
-                            "div",
-                            { className: "flex gap-1 flex-wrap" },
-                            (a.capabilities || []).map((c) =>
-                              h(Badge, { key: c, color: "gray" }, c),
-                            ),
-                          ),
-                        ),
-                        h(
-                          "td",
-                          { className: "py-3 px-3 text-xs text-muted" },
-                          a.last_polled
-                            ? new Date(a.last_polled).toLocaleString()
-                            : "Never",
-                        ),
-                      ),
+                    "div",
+                    { className: "flex gap-2 pt-1" },
+                    h(
+                      Button,
+                      {
+                        onClick: handleRegister,
+                        disabled: registering || !form.anchor_id.trim(),
+                      },
+                      registering ? "Registering..." : "Register Anchor",
+                    ),
+                    h(
+                      Button,
+                      {
+                        variant: "ghost",
+                        onClick: () => setShowRegister(false),
+                      },
+                      "Cancel",
                     ),
                   ),
                 ),
+          ),
+
+          // ── Table ───────────────────────────────────────────────────────
+          h(
+            Card,
+            null,
+            h(
+              "div",
+              { className: "flex items-center gap-3 mb-4 flex-wrap" },
+              h(Input, {
+                placeholder: "Search ID / IP / MAC…",
+                value: filter,
+                onChange: setFilter,
+                className: "w-56",
+              }),
+              h(
+                "select",
+                {
+                  value: statusFilter,
+                  onChange: (e) => setStatusFilter(e.target.value),
+                  className:
+                    "px-2 py-1.5 border border-border rounded text-sm bg-panel text-ink",
+                },
+                h("option", { value: "" }, "All Statuses"),
+                DEVICE_STATUSES.map((s) =>
+                  h("option", { key: s.value, value: s.value }, s.label),
+                ),
               ),
+              h(
+                "span",
+                { className: "text-sm text-muted ml-auto" },
+                `${items.length} anchor${items.length !== 1 ? "s" : ""}`,
+              ),
+            ),
+            items.length === 0
+              ? h(EmptyState, {
+                  icon: "\uD83D\uDCE1",
+                  title: "No anchors found",
+                  description:
+                    "Register a device above or add one via the Setup Wizard.",
+                })
+              : h(
+                  "div",
+                  { className: "overflow-x-auto" },
+                  h(
+                    "table",
+                    { className: "w-full text-sm" },
+                    h(
+                      "thead",
+                      null,
+                      h(
+                        "tr",
+                        { className: "border-b border-border" },
+                        COLS.map((col) =>
+                          h(
+                            "th",
+                            {
+                              key: col,
+                              className:
+                                "text-left py-3 px-3 text-xs font-medium text-muted uppercase tracking-wider",
+                            },
+                            col,
+                          ),
+                        ),
+                      ),
+                    ),
+                    h(
+                      "tbody",
+                      null,
+                      items.map((a) => {
+                        const isEditing = editId === a.id;
+                        return h(
+                          "tr",
+                          {
+                            key: a.id,
+                            className: `border-b border-surface-dim ${isEditing ? "bg-accent-light" : "hover:bg-surface-dim"}`,
+                          },
+                          // ID
+                          h(
+                            "td",
+                            {
+                              className:
+                                "py-3 px-3 font-mono font-medium whitespace-nowrap",
+                            },
+                            a.anchor_id,
+                          ),
+                          // Type
+                          h(
+                            "td",
+                            { className: "py-3 px-3" },
+                            h(
+                              Badge,
+                              {
+                                color:
+                                  a.anchor_type === "esp32" ? "purple" : "blue",
+                              },
+                              a.anchor_type,
+                            ),
+                          ),
+                          // IP
+                          h(
+                            "td",
+                            { className: "py-3 px-3 font-mono text-xs" },
+                            a.ip_address || "—",
+                          ),
+                          // MAC
+                          h(
+                            "td",
+                            { className: "py-3 px-3 font-mono text-xs" },
+                            a.mac_address || "—",
+                          ),
+                          // Device Status
+                          h(
+                            "td",
+                            { className: "py-3 px-3" },
+                            isEditing
+                              ? h(
+                                  "select",
+                                  {
+                                    value: editData.device_status,
+                                    onChange: (e) =>
+                                      setEditData((d) => ({
+                                        ...d,
+                                        device_status: e.target.value,
+                                      })),
+                                    className:
+                                      "px-1.5 py-1 border border-border rounded text-xs bg-panel",
+                                  },
+                                  DEVICE_STATUSES.map((s) =>
+                                    h(
+                                      "option",
+                                      { key: s.value, value: s.value },
+                                      s.label,
+                                    ),
+                                  ),
+                                )
+                              : h(DeviceStatusBadge, {
+                                  value: a.device_status || "in_stock",
+                                }),
+                          ),
+                          // Flags
+                          h(
+                            "td",
+                            { className: "py-3 px-3 max-w-xs" },
+                            isEditing
+                              ? h(
+                                  "div",
+                                  { className: "flex flex-col gap-1" },
+                                  ANCHOR_FLAGS.map((af) =>
+                                    h(
+                                      "label",
+                                      {
+                                        key: af.value,
+                                        className:
+                                          "flex items-center gap-1 text-xs cursor-pointer whitespace-nowrap",
+                                      },
+                                      h("input", {
+                                        type: "checkbox",
+                                        checked: editData.flags.includes(
+                                          af.value,
+                                        ),
+                                        onChange: () =>
+                                          toggleFlag(af.value, editData.flags),
+                                      }),
+                                      af.label,
+                                    ),
+                                  ),
+                                )
+                              : h(FlagBadges, { flags: a.flags }),
+                          ),
+                          // Connectivity
+                          h(
+                            "td",
+                            { className: "py-3 px-3" },
+                            h(
+                              "div",
+                              { className: "flex items-center gap-1.5" },
+                              h(StatusDot, { status: a.status }),
+                              h("span", { className: "text-xs" }, a.status),
+                            ),
+                          ),
+                          // Floor
+                          h(
+                            "td",
+                            { className: "py-3 px-3 text-xs text-muted" },
+                            a.floor_id
+                              ? `Floor ${a.floor_id}`
+                              : h(
+                                  "span",
+                                  { className: "italic" },
+                                  "Unassigned",
+                                ),
+                          ),
+                          // Actions
+                          h(
+                            "td",
+                            { className: "py-3 px-3 whitespace-nowrap" },
+                            isEditing
+                              ? h(
+                                  "div",
+                                  { className: "flex gap-1" },
+                                  h(
+                                    Button,
+                                    {
+                                      size: "sm",
+                                      onClick: () => saveEdit(a),
+                                      disabled: saving,
+                                    },
+                                    saving ? "…" : "Save",
+                                  ),
+                                  h(
+                                    Button,
+                                    {
+                                      size: "sm",
+                                      variant: "ghost",
+                                      onClick: cancelEdit,
+                                    },
+                                    "Cancel",
+                                  ),
+                                )
+                              : h(
+                                  "div",
+                                  { className: "flex gap-1" },
+                                  h(
+                                    Button,
+                                    {
+                                      size: "sm",
+                                      variant: "secondary",
+                                      onClick: () => startEdit(a),
+                                    },
+                                    "Edit",
+                                  ),
+                                  h(
+                                    "button",
+                                    {
+                                      onClick: () => handleDelete(a),
+                                      className:
+                                        "text-muted hover:text-danger transition-colors p-1",
+                                      title: "Delete anchor",
+                                    },
+                                    "\uD83D\uDDD1",
+                                  ),
+                                ),
+                          ),
+                        );
+                      }),
+                    ),
+                  ),
+                ),
+          ),
         );
       }
+
+      const PRIORITY_COLORS = [
+        "gray",
+        "blue",
+        "yellow",
+        "orange",
+        "red",
+        "red",
+      ];
+      const PRIORITY_LABELS = ["—", "Low", "P2", "P3", "High", "Critical"];
 
       function TagsTable() {
         const { data, loading, error, reload } = useApi(() =>
@@ -2089,14 +4342,37 @@
         );
         const [filter, setFilter] = useState("");
         const [showCreate, setShowCreate] = useState(false);
+        const [editingId, setEditingId] = useState(null);
+        const [editForm, setEditForm] = useState({});
         const [form, setForm] = useState({
           tag_id: "",
+          name: "",
+          device_type: "",
           ssid: "",
           mac_address: "",
           rssi_at_1m_dbm: -22,
           path_loss_n: 4.0,
+          security_level: 1,
+          priority: 1,
+          floor_scope: "ALL",
+          room_scope: "",
         });
         const [creating, setCreating] = useState(false);
+
+        const parseScope = (val) =>
+          val.trim() === "" || val.trim() === "ALL"
+            ? ["ALL"]
+            : val
+                .split(",")
+                .map((s) => s.trim())
+                .filter(Boolean);
+        const parseScopeRoom = (val) =>
+          val.trim() === ""
+            ? []
+            : val
+                .split(",")
+                .map((s) => s.trim())
+                .filter(Boolean);
 
         const handleCreate = async () => {
           if (!form.tag_id.trim()) return;
@@ -2105,15 +4381,26 @@
             await platform.createTag({
               ...form,
               tag_id: form.tag_id.trim(),
+              name: form.name.trim(),
               rssi_at_1m_dbm: +form.rssi_at_1m_dbm,
               path_loss_n: +form.path_loss_n,
+              security_level: +form.security_level,
+              priority: +form.priority,
+              floor_scope: parseScope(form.floor_scope),
+              room_scope: parseScopeRoom(form.room_scope),
             });
             setForm({
               tag_id: "",
+              name: "",
+              device_type: "",
               ssid: "",
               mac_address: "",
               rssi_at_1m_dbm: -22,
               path_loss_n: 4.0,
+              security_level: 1,
+              priority: 1,
+              floor_scope: "ALL",
+              room_scope: "",
             });
             setShowCreate(false);
             reload();
@@ -2121,6 +4408,35 @@
             alert(e.message);
           } finally {
             setCreating(false);
+          }
+        };
+
+        const startEdit = (t) => {
+          setEditingId(t.id);
+          setEditForm({
+            name: t.name || "",
+            device_type: t.device_type || "",
+            security_level: t.security_level ?? 1,
+            priority: t.priority ?? 1,
+            floor_scope: (t.floor_scope || ["ALL"]).join(", "),
+            room_scope: (t.room_scope || []).join(", "),
+          });
+        };
+
+        const handleSaveEdit = async (id) => {
+          try {
+            await platform.updateTag(id, {
+              name: editForm.name.trim(),
+              device_type: editForm.device_type.trim(),
+              security_level: +editForm.security_level,
+              priority: +editForm.priority,
+              floor_scope: parseScope(editForm.floor_scope),
+              room_scope: parseScopeRoom(editForm.room_scope),
+            });
+            setEditingId(null);
+            reload();
+          } catch (e) {
+            alert(e.message);
           }
         };
 
@@ -2135,8 +4451,22 @@
           (t) =>
             !filter ||
             t.tag_id.toLowerCase().includes(filter.toLowerCase()) ||
+            (t.name || "").toLowerCase().includes(filter.toLowerCase()) ||
             (t.ssid || "").toLowerCase().includes(filter.toLowerCase()),
         );
+
+        const COLS = [
+          "Tag ID / Name",
+          "Type",
+          "SSID / MAC",
+          "Priority",
+          "Sec Lvl",
+          "Floor Scope",
+          "Room Scope",
+          "Location",
+          "Status",
+          "",
+        ];
 
         return h(
           "div",
@@ -2149,10 +4479,22 @@
                 "div",
                 { className: "grid grid-cols-2 lg:grid-cols-3 gap-3 mb-3" },
                 h(Input, {
-                  label: "Tag ID",
+                  label: "Tag ID *",
                   value: form.tag_id,
                   onChange: (v) => setForm((f) => ({ ...f, tag_id: v })),
                   placeholder: "e.g. tag_001",
+                }),
+                h(Input, {
+                  label: "Friendly Name",
+                  value: form.name,
+                  onChange: (v) => setForm((f) => ({ ...f, name: v })),
+                  placeholder: "e.g. Dr. Smith's Laptop",
+                }),
+                h(Input, {
+                  label: "Device Type",
+                  value: form.device_type,
+                  onChange: (v) => setForm((f) => ({ ...f, device_type: v })),
+                  placeholder: "laptop / phone / badge…",
                 }),
                 h(Input, {
                   label: "SSID",
@@ -2179,6 +4521,34 @@
                   step: "0.1",
                   value: form.path_loss_n,
                   onChange: (v) => setForm((f) => ({ ...f, path_loss_n: v })),
+                }),
+                h(Input, {
+                  label: "Priority (1–5)",
+                  type: "number",
+                  min: 1,
+                  max: 5,
+                  value: form.priority,
+                  onChange: (v) => setForm((f) => ({ ...f, priority: v })),
+                }),
+                h(Input, {
+                  label: "Security Level",
+                  type: "number",
+                  min: 1,
+                  value: form.security_level,
+                  onChange: (v) =>
+                    setForm((f) => ({ ...f, security_level: v })),
+                }),
+                h(Input, {
+                  label: "Floor Scope (comma-sep or ALL)",
+                  value: form.floor_scope,
+                  onChange: (v) => setForm((f) => ({ ...f, floor_scope: v })),
+                  placeholder: "ALL  or  Ground, Second",
+                }),
+                h(Input, {
+                  label: "Room Scope (comma-sep, blank = all)",
+                  value: form.room_scope,
+                  onChange: (v) => setForm((f) => ({ ...f, room_scope: v })),
+                  placeholder: "Lab01, Room2",
                 }),
               ),
               h(
@@ -2245,22 +4615,13 @@
                       h(
                         "tr",
                         { className: "border-b border-border" },
-                        [
-                          "Tag ID",
-                          "SSID",
-                          "MAC",
-                          "RSSI/PL",
-                          "Status",
-                          "Trilateration",
-                          "Fingerprint",
-                          "Last Polled",
-                        ].map((col) =>
+                        COLS.map((col) =>
                           h(
                             "th",
                             {
                               key: col,
                               className:
-                                "text-left py-3 px-3 text-xs font-medium text-muted uppercase tracking-wider",
+                                "text-left py-3 px-2 text-xs font-medium text-muted uppercase tracking-wider",
                             },
                             col,
                           ),
@@ -2270,37 +4631,192 @@
                     h(
                       "tbody",
                       null,
-                      items.map((t) =>
-                        h(
+                      items.map((t) => {
+                        const isEditing = editingId === t.id;
+                        return h(
                           "tr",
                           {
                             key: t.id,
                             className:
                               "border-b border-surface-dim hover:bg-surface-dim",
                           },
+                          // Tag ID / Name
                           h(
                             "td",
-                            { className: "py-3 px-3 font-mono font-medium" },
-                            t.tag_id,
+                            { className: "py-2 px-2" },
+                            h(
+                              "div",
+                              { className: "font-mono font-medium text-xs" },
+                              t.tag_id,
+                            ),
+                            isEditing
+                              ? h("input", {
+                                  className:
+                                    "border border-border rounded px-1 py-0.5 text-xs w-full mt-1",
+                                  value: editForm.name,
+                                  onChange: (e) =>
+                                    setEditForm((f) => ({
+                                      ...f,
+                                      name: e.target.value,
+                                    })),
+                                  placeholder: "Friendly name",
+                                })
+                              : t.name &&
+                                  h(
+                                    "div",
+                                    { className: "text-xs text-muted mt-0.5" },
+                                    t.name,
+                                  ),
                           ),
+                          // Type
                           h(
                             "td",
-                            { className: "py-3 px-3" },
-                            t.ssid || "\u2014",
+                            { className: "py-2 px-2" },
+                            isEditing
+                              ? h("input", {
+                                  className:
+                                    "border border-border rounded px-1 py-0.5 text-xs w-24",
+                                  value: editForm.device_type,
+                                  onChange: (e) =>
+                                    setEditForm((f) => ({
+                                      ...f,
+                                      device_type: e.target.value,
+                                    })),
+                                  placeholder: "laptop…",
+                                })
+                              : h(
+                                  "span",
+                                  { className: "text-xs text-muted" },
+                                  t.device_type || "—",
+                                ),
                           ),
+                          // SSID / MAC
                           h(
                             "td",
-                            { className: "py-3 px-3 font-mono text-xs" },
-                            t.mac_address || "\u2014",
+                            { className: "py-2 px-2" },
+                            h("div", { className: "text-xs" }, t.ssid || "—"),
+                            h(
+                              "div",
+                              { className: "font-mono text-xs text-muted" },
+                              t.mac_address || "",
+                            ),
                           ),
+                          // Priority
                           h(
                             "td",
-                            { className: "py-3 px-3 font-mono text-xs" },
-                            `${t.rssi_at_1m_dbm}dBm / n=${t.path_loss_n}`,
+                            { className: "py-2 px-2" },
+                            isEditing
+                              ? h("input", {
+                                  type: "number",
+                                  min: 1,
+                                  max: 5,
+                                  className:
+                                    "border border-border rounded px-1 py-0.5 text-xs w-12",
+                                  value: editForm.priority,
+                                  onChange: (e) =>
+                                    setEditForm((f) => ({
+                                      ...f,
+                                      priority: e.target.value,
+                                    })),
+                                })
+                              : h(
+                                  Badge,
+                                  {
+                                    color:
+                                      PRIORITY_COLORS[t.priority] || "gray",
+                                  },
+                                  `P${t.priority} ${PRIORITY_LABELS[t.priority] || ""}`,
+                                ),
                           ),
+                          // Security Level
                           h(
                             "td",
-                            { className: "py-3 px-3" },
+                            { className: "py-2 px-2" },
+                            isEditing
+                              ? h("input", {
+                                  type: "number",
+                                  min: 1,
+                                  className:
+                                    "border border-border rounded px-1 py-0.5 text-xs w-12",
+                                  value: editForm.security_level,
+                                  onChange: (e) =>
+                                    setEditForm((f) => ({
+                                      ...f,
+                                      security_level: e.target.value,
+                                    })),
+                                })
+                              : h(
+                                  "span",
+                                  { className: "text-xs font-mono" },
+                                  `L${t.security_level ?? 1}`,
+                                ),
+                          ),
+                          // Floor Scope
+                          h(
+                            "td",
+                            { className: "py-2 px-2" },
+                            isEditing
+                              ? h("input", {
+                                  className:
+                                    "border border-border rounded px-1 py-0.5 text-xs w-28",
+                                  value: editForm.floor_scope,
+                                  onChange: (e) =>
+                                    setEditForm((f) => ({
+                                      ...f,
+                                      floor_scope: e.target.value,
+                                    })),
+                                  placeholder: "ALL",
+                                })
+                              : h(
+                                  "span",
+                                  { className: "text-xs" },
+                                  (t.floor_scope || ["ALL"]).join(", "),
+                                ),
+                          ),
+                          // Room Scope
+                          h(
+                            "td",
+                            { className: "py-2 px-2" },
+                            isEditing
+                              ? h("input", {
+                                  className:
+                                    "border border-border rounded px-1 py-0.5 text-xs w-28",
+                                  value: editForm.room_scope,
+                                  onChange: (e) =>
+                                    setEditForm((f) => ({
+                                      ...f,
+                                      room_scope: e.target.value,
+                                    })),
+                                  placeholder: "blank = all",
+                                })
+                              : h(
+                                  "span",
+                                  { className: "text-xs text-muted" },
+                                  (t.room_scope || []).length > 0
+                                    ? t.room_scope.join(", ")
+                                    : "all",
+                                ),
+                          ),
+                          // Location
+                          h(
+                            "td",
+                            { className: "py-2 px-2" },
+                            h(
+                              "div",
+                              { className: "text-xs" },
+                              t.trilateration_location || "—",
+                            ),
+                            t.fingerprint_location &&
+                              h(
+                                "div",
+                                { className: "text-xs text-muted" },
+                                `fp: ${t.fingerprint_location}`,
+                              ),
+                          ),
+                          // Status
+                          h(
+                            "td",
+                            { className: "py-2 px-2" },
                             h(
                               "div",
                               { className: "flex items-center gap-1.5" },
@@ -2308,24 +4824,766 @@
                               h("span", { className: "text-xs" }, t.status),
                             ),
                           ),
+                          // Actions
                           h(
                             "td",
-                            { className: "py-3 px-3 text-xs" },
-                            t.trilateration_location || "\u2014",
+                            { className: "py-2 px-2" },
+                            isEditing
+                              ? h(
+                                  "div",
+                                  { className: "flex gap-1" },
+                                  h(
+                                    Button,
+                                    {
+                                      size: "sm",
+                                      onClick: () => handleSaveEdit(t.id),
+                                    },
+                                    "Save",
+                                  ),
+                                  h(
+                                    Button,
+                                    {
+                                      size: "sm",
+                                      variant: "ghost",
+                                      onClick: () => setEditingId(null),
+                                    },
+                                    "✕",
+                                  ),
+                                )
+                              : h(
+                                  "button",
+                                  {
+                                    className:
+                                      "text-xs text-muted hover:text-ink border border-border rounded px-2 py-0.5",
+                                    onClick: () => startEdit(t),
+                                  },
+                                  "Edit",
+                                ),
                           ),
-                          h(
-                            "td",
-                            { className: "py-3 px-3 text-xs" },
-                            t.fingerprint_location || "\u2014",
-                          ),
-                          h(
-                            "td",
-                            { className: "py-3 px-3 text-xs text-muted" },
-                            t.last_polled
-                              ? new Date(t.last_polled).toLocaleString()
-                              : "Never",
-                          ),
+                        );
+                      }),
+                    ),
+                  ),
+                ),
+          ),
+        );
+      }
+
+      // ═════════════════════════════════════════════════════════════════════
+      // PAGE: LOCALIZATION
+      // ═════════════════════════════════════════════════════════════════════
+
+      const METHOD_INFO = {
+        trilateration: {
+          label: "Trilateration",
+          color: "blue",
+          desc: "Distance-based positioning using RSSI path-loss model. Runs every scan cycle as a preview.",
+        },
+        fingerprinting: {
+          label: "Fingerprinting",
+          color: "purple",
+          desc: "Pattern matching against a pre-recorded radiomap. Requires survey calibration first.",
+        },
+        ble: {
+          label: "BLE",
+          color: "green",
+          desc: "Bluetooth Low Energy proximity. Requires BLE-capable anchors (stub — not yet active).",
+        },
+        tof: {
+          label: "ToF",
+          color: "orange",
+          desc: "Time-of-Flight ranging via MQTT. Requires ToF anchors reporting on MQTT broker.",
+        },
+      };
+
+      // Renders an SVG map of rooms + device dots — used at both small and expanded sizes
+      function MethodMapSvg({ rooms, devices, fw, fh, width, height }) {
+        const sx = width / (fw || 20),
+          sy = height / (fh || 20);
+        return h(
+          "svg",
+          {
+            width,
+            height,
+            viewBox: `0 0 ${width} ${height}`,
+            style: {
+              background: "#18181b",
+              display: "block",
+              width: "100%",
+              height: "100%",
+            },
+            preserveAspectRatio: "xMidYMid meet",
+          },
+          rooms.map((r, ri) =>
+            r.polygon?.length
+              ? h("polygon", {
+                  key: ri,
+                  points: r.polygon
+                    .map(([px, py]) => `${px * sx},${py * sy}`)
+                    .join(" "),
+                  fill: "rgba(99,102,241,0.15)",
+                  stroke: "#6366f1",
+                  strokeWidth: 1,
+                })
+              : null,
+          ),
+          rooms.map((r, ri) => {
+            if (!r.polygon?.length) return null;
+            const cx =
+              r.polygon.reduce((s, [px]) => s + px, 0) / r.polygon.length;
+            const cy =
+              r.polygon.reduce((s, [, py]) => s + py, 0) / r.polygon.length;
+            const fontSize = width > 400 ? 13 : 9;
+            return h(
+              "text",
+              {
+                key: `lbl-${ri}`,
+                x: cx * sx,
+                y: cy * sy,
+                textAnchor: "middle",
+                dominantBaseline: "middle",
+                fill: "#a5b4fc",
+                fontSize,
+              },
+              r.name,
+            );
+          }),
+          devices.map((d, di) => {
+            const r = width > 400 ? 10 : 6;
+            const fs = width > 400 ? 11 : 8;
+            return h(
+              "g",
+              { key: di },
+              h("circle", {
+                cx: (d.x || 0) * sx,
+                cy: (d.y || 0) * sy,
+                r,
+                fill: d.reachable ? "#22c55e" : "#f87171",
+                stroke: "#fff",
+                strokeWidth: 1,
+              }),
+              h(
+                "text",
+                {
+                  x: (d.x || 0) * sx,
+                  y: (d.y || 0) * sy - r - 3,
+                  textAnchor: "middle",
+                  fill: "#e4e4e7",
+                  fontSize: fs,
+                },
+                d.device_id,
+              ),
+            );
+          }),
+        );
+      }
+
+      // Expanded overlay for a single method map
+      function ExpandedMapOverlay({ method, onClose }) {
+        const { data } = usePolling(
+          () => engine.map(method).catch(() => null),
+          2000,
+        );
+        const rooms = data?.rooms || [];
+        const devices = data?.devices || [];
+        const floor = data?.floor || {};
+        const mi = METHOD_INFO[method] || {};
+
+        return h(
+          "div",
+          {
+            className: "fixed inset-0 z-50 flex items-center justify-center",
+            style: {
+              background: "rgba(0,0,0,0.6)",
+              backdropFilter: "blur(4px)",
+            },
+            onClick: (e) => {
+              if (e.target === e.currentTarget) onClose();
+            },
+          },
+          h(
+            "div",
+            {
+              className:
+                "bg-panel border border-border rounded-xl shadow-2xl overflow-hidden",
+              style: {
+                width: "80vw",
+                maxWidth: 900,
+                height: "70vh",
+                maxHeight: 650,
+              },
+            },
+            // Header
+            h(
+              "div",
+              {
+                className:
+                  "flex items-center justify-between px-5 py-3 border-b border-border bg-surface-dim",
+              },
+              h(
+                "div",
+                { className: "flex items-center gap-3" },
+                h(Badge, { color: mi.color || "gray" }, mi.label || method),
+                h(
+                  "span",
+                  { className: "text-sm text-muted" },
+                  `${devices.length} device(s)`,
+                ),
+              ),
+              h(
+                "button",
+                {
+                  className:
+                    "text-sm text-muted hover:text-ink px-2 py-1 rounded hover:bg-surface-dim",
+                  onClick: onClose,
+                },
+                "✕ Close",
+              ),
+            ),
+            // Map
+            h(
+              "div",
+              { style: { height: "calc(100% - 90px)" }, className: "p-2" },
+              h(MethodMapSvg, {
+                rooms,
+                devices,
+                fw: floor.width_m || 20,
+                fh: floor.height_m || 20,
+                width: 860,
+                height: 500,
+              }),
+            ),
+            // Device list footer
+            h(
+              "div",
+              {
+                className:
+                  "px-5 py-2 border-t border-border bg-surface-dim font-mono text-xs text-muted overflow-x-auto whitespace-nowrap",
+              },
+              devices.length === 0
+                ? "No devices"
+                : devices
+                    .map(
+                      (d) =>
+                        `${d.device_id} → ${d.room_id || "?"} (${(d.x || 0).toFixed(1)}, ${(d.y || 0).toFixed(1)})`,
+                    )
+                    .join("   ·   "),
+            ),
+          ),
+        );
+      }
+
+      // Try pywebview native window first, fall back to in-app overlay
+      function _popOutMap(method) {
+        window.pywebview.api.open_map_window(method);
+        //  } else {
+        // Browser dev mode fallback — use in-app overlay
+        //fallbackExpand && fallbackExpand(method);
+        //}
+      }
+
+      // Small map panel with pop-out / expand button
+      function MethodMapPanel({ method, onExpand }) {
+        const { data } = usePolling(
+          () => engine.map(method).catch(() => null),
+          2000,
+        );
+        const rooms = data?.rooms || [];
+        const devices = data?.devices || [];
+        const floor = data?.floor || {};
+        const mi = METHOD_INFO[method] || {};
+
+        return h(
+          "div",
+          {
+            className:
+              "border border-border rounded-lg overflow-hidden bg-panel",
+          },
+          h(
+            "div",
+            {
+              className:
+                "flex items-center justify-between px-3 py-2 border-b border-border bg-surface-dim",
+            },
+            h(
+              "div",
+              { className: "flex items-center gap-2" },
+              h(Badge, { color: mi.color || "gray" }, mi.label || method),
+              h(
+                "span",
+                { className: "text-xs text-muted" },
+                `${devices.length} device(s)`,
+              ),
+            ),
+            h(
+              "button",
+              {
+                className:
+                  "text-xs text-muted hover:text-ink px-1.5 py-0.5 rounded hover:bg-panel border border-border",
+                title: "Open in separate window (drag to any monitor)",
+                onClick: () => _popOutMap(method),
+              },
+              "⧉ pop out",
+            ),
+          ),
+          h(MethodMapSvg, {
+            rooms,
+            devices,
+            fw: floor.width_m || 20,
+            fh: floor.height_m || 20,
+            width: 260,
+            height: 180,
+          }),
+        );
+      }
+
+      function LocalizationPage() {
+        const [pollInterval, setPollInterval] = useState(1.5);
+        const [testingMode, setTestingMode] = useState(false);
+        const [selectedMethods, setSelectedMethods] = useState([
+          "trilateration",
+        ]);
+        const [starting, setStarting] = useState(false);
+        const [stopping, setStopping] = useState(false);
+        const [msg, setMsg] = useState(null);
+        const [selectedCampusId, setSelectedCampusId] = useState(null);
+        const [expandedMethod, setExpandedMethod] = useState(null);
+        const [logLevelFilter, setLogLevelFilter] = useState("");
+
+        const { data: campuses } = useApi(() => platform.listCampuses());
+        useEffect(() => {
+          if (campuses?.length && !selectedCampusId)
+            setSelectedCampusId(campuses[0].id);
+        }, [campuses]);
+
+        const { data: engStatus } = usePolling(
+          () => engine.status().catch(() => null),
+          3000,
+        );
+        const { data: engHealth } = usePolling(
+          () => engine.health().catch(() => null),
+          3000,
+        );
+        const { data: logsData } = usePolling(
+          () =>
+            platform.listEngineLogs({
+              limit: 100,
+              level: logLevelFilter || undefined,
+            }),
+          4000,
+          [logLevelFilter],
+        );
+
+        const isRunning = engHealth?.poll_running === true;
+        const logs = logsData || [];
+
+        const LEVEL_STYLE = {
+          info: "text-emerald-600",
+          warn: "text-amber-600",
+          alert: "text-orange-600",
+          config: "text-sky-600",
+          security: "text-red-600",
+        };
+        const LEVEL_BG = {
+          info: "bg-emerald-50/60",
+          warn: "bg-amber-50",
+          alert: "bg-orange-50",
+          config: "bg-sky-50",
+          security: "bg-red-50",
+        };
+
+        const toggleMethod = (m) =>
+          setSelectedMethods((prev) =>
+            prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m],
+          );
+
+        const handleStart = async () => {
+          if (!selectedCampusId) {
+            setMsg({ ok: false, text: "Select a campus first." });
+            return;
+          }
+          setStarting(true);
+          setMsg(null);
+          try {
+            await platform.startEngine({
+              campus_id: selectedCampusId,
+              poll_interval_s: pollInterval,
+              testing_mode: testingMode,
+              methods: selectedMethods.join(","),
+            });
+            setMsg({ ok: true, text: "Engine start requested." });
+          } catch (e) {
+            setMsg({ ok: false, text: e.message });
+          } finally {
+            setStarting(false);
+          }
+        };
+
+        const handleStop = async () => {
+          setStopping(true);
+          setMsg(null);
+          try {
+            await platform.stopEngine();
+            setMsg({ ok: true, text: "Engine stopped." });
+          } catch (e) {
+            setMsg({ ok: false, text: e.message });
+          } finally {
+            setStopping(false);
+          }
+        };
+
+        return h(
+          "div",
+          { className: "fade-in space-y-6" },
+          // Header
+          h(
+            "div",
+            null,
+            h(
+              "h1",
+              { className: "text-2xl font-semibold text-ink" },
+              "Localization",
+            ),
+            h(
+              "p",
+              { className: "text-muted text-sm mt-1" },
+              "Configure and monitor the Hybrid localization engine",
+            ),
+          ),
+
+          // Status bar
+          h(
+            Card,
+            null,
+            h(
+              "div",
+              {
+                className: "flex items-center justify-between flex-wrap gap-4",
+              },
+              h(
+                "div",
+                { className: "flex items-center gap-4" },
+                h(
+                  "div",
+                  { className: "flex items-center gap-2" },
+                  h(StatusDot, {
+                    status: engHealth?.ok ? "online" : "offline",
+                  }),
+                  h(
+                    "span",
+                    { className: "text-sm font-medium" },
+                    engHealth?.ok ? "Engine online" : "Engine offline",
+                  ),
+                ),
+                isRunning &&
+                  h(
+                    "div",
+                    { className: "flex items-center gap-2" },
+                    h(StatusDot, { status: "polling" }),
+                    h(
+                      "span",
+                      { className: "text-sm text-muted" },
+                      "Polling active",
+                    ),
+                  ),
+                engStatus &&
+                  h(
+                    "div",
+                    { className: "text-xs text-muted" },
+                    `${engStatus.total_decisions || 0} verdicts  ·  last: ${engStatus.last_device_id || "—"}`,
+                  ),
+              ),
+              h(
+                "div",
+                { className: "flex gap-2" },
+                h(
+                  Button,
+                  {
+                    variant: isRunning ? "ghost" : "primary",
+                    size: "sm",
+                    disabled: starting || isRunning,
+                    onClick: handleStart,
+                  },
+                  starting ? "Starting…" : "▶ Start",
+                ),
+                h(
+                  Button,
+                  {
+                    variant: "danger",
+                    size: "sm",
+                    disabled: stopping || !isRunning,
+                    onClick: handleStop,
+                  },
+                  stopping ? "Stopping…" : "■ Stop",
+                ),
+              ),
+            ),
+            msg &&
+              h(
+                "div",
+                {
+                  className: `mt-3 text-sm px-3 py-2 rounded ${msg.ok ? "bg-emerald-50 text-emerald-800" : "bg-red-50 text-red-800"}`,
+                },
+                msg.text,
+              ),
+          ),
+
+          // Settings + method selection
+          h(
+            "div",
+            { className: "grid grid-cols-1 lg:grid-cols-2 gap-6" },
+            // Settings panel
+            h(
+              Card,
+              { title: "Engine Settings" },
+              h(
+                "div",
+                { className: "space-y-4" },
+                h(
+                  "div",
+                  null,
+                  h(
+                    "label",
+                    { className: "block text-xs font-medium text-muted mb-1" },
+                    "Campus",
+                  ),
+                  h(
+                    "select",
+                    {
+                      value: selectedCampusId || "",
+                      onChange: (e) => setSelectedCampusId(+e.target.value),
+                      className:
+                        "w-full border border-border rounded px-2 py-1.5 text-sm bg-surface",
+                    },
+                    (campuses || []).map((c) =>
+                      h("option", { key: c.id, value: c.id }, c.name),
+                    ),
+                  ),
+                ),
+                h(
+                  "div",
+                  null,
+                  h(
+                    "label",
+                    { className: "block text-xs font-medium text-muted mb-1" },
+                    `Poll Interval: ${pollInterval}s`,
+                  ),
+                  h("input", {
+                    type: "range",
+                    min: 0.5,
+                    max: 5,
+                    step: 0.5,
+                    value: pollInterval,
+                    onChange: (e) => setPollInterval(+e.target.value),
+                    className: "w-full accent-accent",
+                  }),
+                  h(
+                    "div",
+                    {
+                      className: "flex justify-between text-xs text-muted mt-1",
+                    },
+                    h("span", null, "0.5s (fast)"),
+                    h("span", null, "5s (slow)"),
+                  ),
+                ),
+                h(
+                  "div",
+                  { className: "flex items-start gap-3" },
+                  h("input", {
+                    type: "checkbox",
+                    id: "testingMode",
+                    checked: testingMode,
+                    onChange: (e) => setTestingMode(e.target.checked),
+                    className: "mt-0.5",
+                  }),
+                  h(
+                    "label",
+                    { htmlFor: "testingMode", className: "cursor-pointer" },
+                    h(
+                      "div",
+                      { className: "text-sm font-medium" },
+                      "Testing Mode",
+                    ),
+                    h(
+                      "div",
+                      { className: "text-xs text-muted" },
+                      "Accept scans with only 1 AP visible (useful when not all APs are deployed)",
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
+            // Method selection
+            h(
+              Card,
+              { title: "Localization Methods" },
+              h(
+                "div",
+                { className: "space-y-3" },
+                Object.entries(METHOD_INFO).map(([key, info]) =>
+                  h(
+                    "div",
+                    {
+                      key,
+                      className: `flex items-start gap-3 p-3 rounded-lg border transition-colors cursor-pointer ${
+                        selectedMethods.includes(key)
+                          ? "border-accent bg-accent/5"
+                          : "border-border hover:border-border/80"
+                      }`,
+                      onClick: () => toggleMethod(key),
+                    },
+                    h("input", {
+                      type: "checkbox",
+                      checked: selectedMethods.includes(key),
+                      onChange: () => toggleMethod(key),
+                      className: "mt-0.5",
+                    }),
+                    h(
+                      "div",
+                      null,
+                      h(
+                        "div",
+                        { className: "flex items-center gap-2 mb-0.5" },
+                        h(
+                          "span",
+                          { className: "text-sm font-medium" },
+                          info.label,
                         ),
+                        h(Badge, { color: info.color }, key),
+                      ),
+                      h("div", { className: "text-xs text-muted" }, info.desc),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+
+          // Expanded map overlay
+          expandedMethod &&
+            h(ExpandedMapOverlay, {
+              method: expandedMethod,
+              onClose: () => setExpandedMethod(null),
+            }),
+
+          // Per-method maps
+          h(
+            Card,
+            { title: "Live Maps" },
+            h(
+              "div",
+              {
+                className:
+                  "grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4",
+              },
+              Object.keys(METHOD_INFO).map((m) =>
+                h(MethodMapPanel, {
+                  key: m,
+                  method: m,
+                  onExpand: setExpandedMethod,
+                }),
+              ),
+            ),
+          ),
+
+          // Live engine log stream
+          h(
+            Card,
+            {
+              title: "Engine Log Stream",
+              actions: h(
+                "div",
+                { className: "flex gap-2 items-center" },
+                h(
+                  "select",
+                  {
+                    value: logLevelFilter,
+                    onChange: (e) => setLogLevelFilter(e.target.value),
+                    className:
+                      "text-xs border border-border rounded px-2 py-1 bg-surface",
+                  },
+                  h("option", { value: "" }, "All levels"),
+                  ["info", "warn", "alert", "config", "security"].map((l) =>
+                    h("option", { key: l, value: l }, l.toUpperCase()),
+                  ),
+                ),
+                h(
+                  Button,
+                  {
+                    variant: "ghost",
+                    size: "sm",
+                    onClick: () => platform.clearEngineLogs().catch(() => {}),
+                  },
+                  "Clear All",
+                ),
+              ),
+            },
+            logs.length === 0
+              ? h(EmptyState, {
+                  icon: "📋",
+                  title: "No engine log entries",
+                  description:
+                    "Logs are generated by the connectivity poller and scope checker as the engine runs",
+                })
+              : h(
+                  "div",
+                  { className: "max-h-96 overflow-y-auto" },
+                  h(
+                    "div",
+                    { className: "space-y-0.5 font-mono text-xs" },
+                    logs.map((l) =>
+                      h(
+                        "div",
+                        {
+                          key: l.id,
+                          className: `flex gap-3 px-3 py-1.5 rounded items-start ${LEVEL_BG[l.level] || "hover:bg-surface-dim"}`,
+                        },
+                        h(
+                          "span",
+                          {
+                            className: "text-muted whitespace-nowrap shrink-0",
+                          },
+                          new Date(l.timestamp).toLocaleTimeString(),
+                        ),
+                        h(
+                          "span",
+                          {
+                            className: `w-14 shrink-0 font-bold ${LEVEL_STYLE[l.level] || "text-gray-400"}`,
+                          },
+                          (l.level || "info").toUpperCase(),
+                        ),
+                        h(
+                          "span",
+                          { className: "text-gray-600 shrink-0 w-20 truncate" },
+                          l.source || "",
+                        ),
+                        l.tag_id &&
+                          h(
+                            "span",
+                            {
+                              className: "text-indigo-700 shrink-0 font-medium",
+                            },
+                            l.tag_id,
+                          ),
+                        h(
+                          "span",
+                          { className: "text-gray-800 flex-1 break-all" },
+                          l.message,
+                        ),
+                        !l.acknowledged &&
+                          h(
+                            "button",
+                            {
+                              className:
+                                "shrink-0 text-muted hover:text-ink text-xs border border-border rounded px-1.5 py-0.5",
+                              onClick: () =>
+                                platform
+                                  .ackEngineLog(l.id, "admin")
+                                  .catch(() => {}),
+                            },
+                            "ack",
+                          ),
                       ),
                     ),
                   ),
@@ -2338,47 +5596,214 @@
       // PAGE: LOGS
       // ═════════════════════════════════════════════════════════════════════
 
+      const LOG_LEVEL_TABS = [
+        { id: "all", label: "All", color: "bg-gray-500" },
+        { id: "info", label: "Info", color: "bg-emerald-500" },
+        { id: "warn", label: "Warn", color: "bg-amber-500" },
+        { id: "alert", label: "Alert", color: "bg-orange-500" },
+        { id: "config", label: "Config", color: "bg-sky-500" },
+        { id: "security", label: "Security", color: "bg-red-500" },
+        {
+          id: "system",
+          label: "System",
+          color: "bg-violet-500",
+          isSource: true,
+        },
+      ];
+
       function LogsPage() {
-        const [tab, setTab] = useState("crossings");
+        const [tab, setTab] = useState("all");
+        const activeTab = LOG_LEVEL_TABS.find((t) => t.id === tab) || {};
+        const {
+          data: logsData,
+          loading,
+          error,
+          reload,
+        } = usePolling(
+          () =>
+            platform.listEngineLogs({
+              limit: 200,
+              level: activeTab.isSource
+                ? undefined
+                : tab === "all"
+                  ? undefined
+                  : tab,
+              source: activeTab.isSource ? "system" : undefined,
+            }),
+          4000,
+          [tab],
+        );
+        const logs = logsData || [];
+
+        const LEVEL_STYLE = {
+          info: "text-emerald-700 font-medium",
+          warn: "text-amber-700 font-semibold",
+          alert: "text-orange-700 font-semibold",
+          config: "text-sky-700 font-semibold",
+          security: "text-red-700 font-bold",
+        };
+        const LEVEL_BG = {
+          info: "bg-emerald-50/60 hover:bg-emerald-50",
+          warn: "bg-amber-50 hover:bg-amber-100",
+          alert: "bg-orange-50 hover:bg-orange-100",
+          config: "bg-sky-50 hover:bg-sky-100",
+          security: "bg-red-50 hover:bg-red-100",
+        };
+
         return h(
           "div",
           { className: "fade-in" },
           h(
             "div",
             { className: "mb-6" },
-            h("h1", { className: "text-2xl font-semibold text-ink" }, "Event Logs"),
+            h(
+              "h1",
+              { className: "text-2xl font-semibold text-ink" },
+              "Event Logs",
+            ),
             h(
               "p",
               { className: "text-muted text-sm mt-1" },
-              "Boundary crossings and alerts",
+              "Engine logs from connectivity, scope violations, and localization decisions",
             ),
           ),
+          // Level tabs
           h(
             "div",
-            { className: "flex gap-1 mb-6" },
-            ["crossings", "alerts", "engine"].map((t) =>
+            { className: "flex gap-1.5 mb-6 flex-wrap" },
+            LOG_LEVEL_TABS.map((t) =>
               h(
                 "button",
                 {
-                  key: t,
-                  onClick: () => setTab(t),
-                  className: `px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                    tab === t
+                  key: t.id,
+                  onClick: () => setTab(t.id),
+                  className: `flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    tab === t.id
                       ? "bg-accent text-white"
                       : "bg-surface-dim text-ink-secondary hover:text-ink hover:bg-panel border border-transparent hover:border-border"
                   }`,
                 },
-                t === "crossings"
-                  ? "Crossings"
-                  : t === "alerts"
-                    ? "Alerts"
-                    : "Engine Logs",
+                h("span", { className: `w-2 h-2 rounded-full ${t.color}` }),
+                t.label,
               ),
             ),
           ),
-          tab === "crossings" && h(CrossingsTable),
-          tab === "alerts" && h(AlertsTable),
-          tab === "engine" && h(EngineLogsTable),
+          // Actions bar
+          h(
+            "div",
+            { className: "flex items-center justify-between mb-4" },
+            h(
+              "span",
+              { className: "text-sm text-muted" },
+              `${logs.length} entries${tab !== "all" ? ` (${tab})` : ""}`,
+            ),
+            h(
+              "div",
+              { className: "flex gap-2" },
+              h(
+                Button,
+                {
+                  variant: "ghost",
+                  size: "sm",
+                  onClick: () => platform.clearEngineLogs().catch(() => {}),
+                },
+                "Clear All",
+              ),
+              h(
+                Button,
+                {
+                  variant: "ghost",
+                  size: "sm",
+                  onClick: () => platform.clearEngineLogs(24).catch(() => {}),
+                },
+                "Clear >24h",
+              ),
+            ),
+          ),
+          // Log entries
+          error
+            ? h(ErrorBanner, {
+                message: `Could not load logs: ${error}`,
+                onRetry: reload,
+              })
+            : logs.length === 0
+              ? h(EmptyState, {
+                  icon: "📋",
+                  title:
+                    tab === "all" ? "No log entries yet" : `No ${tab} entries`,
+                  description:
+                    "Logs appear when the engine runs, connectivity is polled, or scope violations occur",
+                })
+              : h(
+                  Card,
+                  null,
+                  h(
+                    "div",
+                    { className: "max-h-[600px] overflow-y-auto" },
+                    h(
+                      "div",
+                      { className: "space-y-0.5 font-mono text-xs" },
+                      logs.map((l) =>
+                        h(
+                          "div",
+                          {
+                            key: l.id,
+                            className: `flex gap-3 px-3 py-1.5 rounded items-start ${LEVEL_BG[l.level] || "hover:bg-surface-dim"}`,
+                          },
+                          h(
+                            "span",
+                            {
+                              className:
+                                "text-muted whitespace-nowrap shrink-0",
+                            },
+                            new Date(l.timestamp).toLocaleTimeString(),
+                          ),
+                          h(
+                            "span",
+                            {
+                              className: `w-16 shrink-0 ${LEVEL_STYLE[l.level] || "text-gray-400"}`,
+                            },
+                            (l.level || "").toUpperCase(),
+                          ),
+                          h(
+                            "span",
+                            {
+                              className: "text-gray-600 shrink-0 w-24 truncate",
+                            },
+                            l.source || "",
+                          ),
+                          l.tag_id &&
+                            h(
+                              "span",
+                              {
+                                className:
+                                  "text-indigo-700 shrink-0 font-medium mr-1",
+                              },
+                              l.tag_id,
+                            ),
+                          h(
+                            "span",
+                            { className: "text-gray-800 flex-1 break-all" },
+                            l.message,
+                          ),
+                          !l.acknowledged &&
+                            h(
+                              "button",
+                              {
+                                className:
+                                  "shrink-0 ml-2 text-xs text-muted border border-border rounded px-1.5 py-0.5 hover:text-ink",
+                                onClick: () =>
+                                  platform
+                                    .ackEngineLog(l.id, "admin")
+                                    .catch(() => {}),
+                              },
+                              "ack",
+                            ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
         );
       }
 
@@ -2632,62 +6057,136 @@
       }
 
       function EngineLogsTable() {
-        const { data, error } = usePolling(
-          () => engine.logs({ limit: 100 }),
+        const [levelFilter, setLevelFilter] = useState("");
+        const { data, error, reload } = usePolling(
+          () =>
+            platform.listEngineLogs({
+              limit: 200,
+              level: levelFilter || undefined,
+            }),
           5000,
         );
         if (error)
-          return h(ErrorBanner, { message: `Engine offline: ${error}` });
-        const items = data?.items || [];
+          return h(ErrorBanner, {
+            message: `Could not load engine logs: ${error}`,
+            onRetry: reload,
+          });
+        const items = data || [];
+
+        const LEVEL_STYLE = {
+          info: "text-emerald-700 font-medium",
+          warn: "text-amber-700 font-semibold",
+          alert: "text-orange-700 font-semibold",
+          config: "text-sky-700 font-semibold",
+          security: "text-red-700 font-bold",
+        };
+        const LEVEL_BG = {
+          info: "bg-emerald-50/60 hover:bg-emerald-50",
+          warn: "bg-amber-50 hover:bg-amber-100",
+          alert: "bg-orange-50 hover:bg-orange-100",
+          config: "bg-sky-50 hover:bg-sky-100",
+          security: "bg-red-50 hover:bg-red-100",
+        };
 
         return h(
           Card,
-          { title: "Engine Logs (Live)" },
+          {
+            title: "Engine Logs",
+            actions: h(
+              "div",
+              { className: "flex gap-2 items-center" },
+              h(
+                "select",
+                {
+                  value: levelFilter,
+                  onChange: (e) => setLevelFilter(e.target.value),
+                  className:
+                    "text-xs border border-border rounded px-2 py-1 bg-surface",
+                },
+                h("option", { value: "" }, "All levels"),
+                ["info", "warn", "alert", "config", "security"].map((l) =>
+                  h("option", { key: l, value: l }, l.toUpperCase()),
+                ),
+              ),
+              h(
+                Button,
+                {
+                  variant: "ghost",
+                  size: "sm",
+                  onClick: () =>
+                    platform
+                      .clearEngineLogs(24)
+                      .then(reload)
+                      .catch(() => reload()),
+                },
+                "Clear >24h",
+              ),
+            ),
+          },
           items.length === 0
             ? h(EmptyState, {
                 icon: "\uD83D\uDCCB",
-                title: "No engine logs yet",
+                title: "No engine log entries",
                 description:
-                  "Logs appear when the engine is running and processing scans",
+                  "Logs are generated by the connectivity poller and scope checker",
               })
             : h(
                 "div",
-                { className: "max-h-96 overflow-y-auto" },
+                { className: "max-h-[500px] overflow-y-auto" },
                 h(
                   "div",
-                  { className: "space-y-1 font-mono text-xs" },
-                  items
-                    .slice()
-                    .reverse()
-                    .map((l, i) =>
+                  { className: "space-y-0.5 font-mono text-xs" },
+                  items.map((l) =>
+                    h(
+                      "div",
+                      {
+                        key: l.id,
+                        className: `flex gap-3 px-3 py-1.5 rounded items-start ${LEVEL_BG[l.level] || "hover:bg-surface-dim"}`,
+                      },
                       h(
-                        "div",
-                        {
-                          key: i,
-                          className: `flex gap-3 px-3 py-1.5 rounded ${l.severity === "WARN" ? "bg-amber-50" : "hover:bg-surface-dim"}`,
-                        },
-                        h(
-                          "span",
-                          { className: "text-muted whitespace-nowrap" },
-                          l.timestamp
-                            ? new Date(l.timestamp).toLocaleTimeString()
-                            : "",
-                        ),
-                        h(
-                          "span",
-                          {
-                            className: `w-10 ${l.severity === "WARN" ? "text-amber-600" : "text-gray-400"}`,
-                          },
-                          l.severity,
-                        ),
-                        h("span", { className: "text-gray-600" }, l.device_id),
-                        h(
-                          "span",
-                          { className: "text-gray-800 flex-1" },
-                          l.message,
-                        ),
+                        "span",
+                        { className: "text-muted whitespace-nowrap shrink-0" },
+                        new Date(l.timestamp).toLocaleTimeString(),
                       ),
+                      h(
+                        "span",
+                        {
+                          className: `w-16 shrink-0 ${LEVEL_STYLE[l.level] || "text-gray-400"}`,
+                        },
+                        (l.level || "").toUpperCase(),
+                      ),
+                      h(
+                        "span",
+                        { className: "text-gray-500 w-20 shrink-0 truncate" },
+                        l.source || "",
+                      ),
+                      l.tag_id &&
+                        h(
+                          "span",
+                          { className: "text-indigo-600 shrink-0 mr-1" },
+                          l.tag_id,
+                        ),
+                      h(
+                        "span",
+                        { className: "text-gray-800 flex-1 break-all" },
+                        l.message,
+                      ),
+                      !l.acknowledged &&
+                        h(
+                          "button",
+                          {
+                            className:
+                              "shrink-0 ml-2 text-xs text-muted border border-border rounded px-1.5 py-0.5 hover:text-ink",
+                            onClick: () =>
+                              platform
+                                .ackEngineLog(l.id, "admin")
+                                .then(reload)
+                                .catch(() => {}),
+                          },
+                          "ack",
+                        ),
                     ),
+                  ),
                 ),
               ),
         );
@@ -2708,6 +6207,7 @@
           Layout,
           { page, setPage, engineHealth },
           page === "wizard" && h(SetupWizard),
+          page === "localize" && h(LocalizationPage),
           page === "map" && h(MapView),
           page === "devices" && h(DeviceTables),
           page === "logs" && h(LogsPage),
