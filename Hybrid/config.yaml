@@ -9,11 +9,12 @@ system:
   consensus_threshold: 0.8
   frame_window_minutes: 1
   testing_mode: false
-  methods: []
+  methods:
+  - trilateration
 telemetry_config:
   edge_campus_id: Carleton University
   edge_building_id: Canal Building
-  edge_floor_id: unknown
+  edge_floor_id: '1'
   poll_interval_s: 1.5
   update_interval_s: 60
   prompts:
@@ -27,7 +28,544 @@ locations:
   Carleton University:
     buildings:
       Canal Building:
-        floors: {}
+        floors:
+          '1':
+            width_m: 37.699
+            height_m: 49.049
+            wifi_aps: {}
+            tof_anchors: {}
+            rooms: {}
+          '3':
+            width_m: 8.62
+            height_m: 13.91
+            wifi_aps: {}
+            tof_anchors: {}
+            rooms:
+              A1:
+                center_x: 0.862
+                center_y: 0.994
+                polygon:
+                - - 0
+                  - 0
+                - - 1.724
+                  - 0
+                - - 1.724
+                  - 1.987
+                - - 0
+                  - 1.987
+                priority_label: Standard
+                localization_type: rssi_section
+                alert_on_exit: false
+              B1:
+                center_x: 2.587
+                center_y: 0.994
+                polygon:
+                - - 1.724
+                  - 0
+                - - 1.724
+                  - 1.987
+                - - 3.448
+                  - 1.987
+                - - 3.45
+                  - 0
+                priority_label: Standard
+                localization_type: rssi_section
+                alert_on_exit: false
+              C1:
+                center_x: 4.306
+                center_y: 0.994
+                polygon:
+                - - 3.448
+                  - 1.987
+                - - 5.162
+                  - 1.987
+                - - 5.162
+                  - 0
+                - - 3.45
+                  - 0
+                priority_label: Standard
+                localization_type: rssi_section
+                alert_on_exit: false
+              D1:
+                center_x: 6.029
+                center_y: 0.994
+                polygon:
+                - - 5.162
+                  - 0
+                - - 6.896
+                  - 0
+                - - 6.896
+                  - 1.987
+                - - 5.162
+                  - 1.987
+                priority_label: Standard
+                localization_type: rssi_section
+                alert_on_exit: false
+              E1:
+                center_x: 7.758
+                center_y: 0.994
+                polygon:
+                - - 6.896
+                  - 0
+                - - 8.62
+                  - 0
+                - - 8.62
+                  - 1.987
+                - - 6.896
+                  - 1.987
+                priority_label: Standard
+                localization_type: rssi_section
+                alert_on_exit: false
+              A2:
+                center_x: 0.862
+                center_y: 2.981
+                polygon:
+                - - 0
+                  - 1.987
+                - - 1.724
+                  - 1.987
+                - - 1.724
+                  - 3.974
+                - - 0
+                  - 3.974
+                priority_label: Standard
+                localization_type: rssi_section
+                alert_on_exit: false
+              B2:
+                center_x: 2.586
+                center_y: 2.981
+                polygon:
+                - - 1.724
+                  - 1.987
+                - - 3.448
+                  - 1.987
+                - - 3.448
+                  - 3.974
+                - - 1.724
+                  - 3.974
+                priority_label: Standard
+                localization_type: rssi_section
+                alert_on_exit: false
+              C2:
+                center_x: 4.305
+                center_y: 2.981
+                polygon:
+                - - 3.448
+                  - 1.987
+                - - 5.162
+                  - 1.987
+                - - 5.162
+                  - 3.974
+                - - 3.448
+                  - 3.974
+                priority_label: Standard
+                localization_type: rssi_section
+                alert_on_exit: false
+              D2:
+                center_x: 6.029
+                center_y: 2.981
+                polygon:
+                - - 5.162
+                  - 1.987
+                - - 6.896
+                  - 1.987
+                - - 6.896
+                  - 3.974
+                - - 5.162
+                  - 3.974
+                priority_label: Standard
+                localization_type: rssi_section
+                alert_on_exit: false
+              E2:
+                center_x: 7.758
+                center_y: 2.981
+                polygon:
+                - - 6.896
+                  - 1.987
+                - - 6.896
+                  - 3.974
+                - - 8.62
+                  - 3.974
+                - - 8.62
+                  - 1.987
+                priority_label: Standard
+                localization_type: rssi_section
+                alert_on_exit: false
+              A3:
+                center_x: 0.862
+                center_y: 4.968
+                polygon:
+                - - 0
+                  - 3.974
+                - - 1.724
+                  - 3.974
+                - - 1.724
+                  - 5.961
+                - - 0
+                  - 5.961
+                priority_label: Standard
+                localization_type: rssi_section
+                alert_on_exit: false
+              B3:
+                center_x: 2.586
+                center_y: 4.968
+                polygon:
+                - - 1.724
+                  - 3.974
+                - - 1.724
+                  - 5.961
+                - - 3.448
+                  - 5.961
+                - - 3.448
+                  - 3.974
+                priority_label: Standard
+                localization_type: rssi_section
+                alert_on_exit: false
+              C3:
+                center_x: 4.305
+                center_y: 4.968
+                polygon:
+                - - 3.448
+                  - 3.974
+                - - 5.162
+                  - 3.974
+                - - 5.162
+                  - 5.961
+                - - 3.448
+                  - 5.961
+                priority_label: Standard
+                localization_type: rssi_section
+                alert_on_exit: false
+              D3:
+                center_x: 6.029
+                center_y: 4.968
+                polygon:
+                - - 5.162
+                  - 3.974
+                - - 6.896
+                  - 3.974
+                - - 6.896
+                  - 5.961
+                - - 5.162
+                  - 5.961
+                priority_label: Standard
+                localization_type: rssi_section
+                alert_on_exit: false
+              E3:
+                center_x: 7.758
+                center_y: 4.968
+                polygon:
+                - - 6.896
+                  - 3.974
+                - - 8.62
+                  - 3.974
+                - - 8.62
+                  - 5.961
+                - - 6.896
+                  - 5.961
+                priority_label: Standard
+                localization_type: rssi_section
+                alert_on_exit: false
+              A4:
+                center_x: 0.862
+                center_y: 6.955
+                polygon:
+                - - 0
+                  - 5.961
+                - - 1.724
+                  - 5.961
+                - - 1.724
+                  - 7.948
+                - - 0
+                  - 7.948
+                priority_label: Standard
+                localization_type: rssi_section
+                alert_on_exit: false
+              B4:
+                center_x: 2.586
+                center_y: 6.955
+                polygon:
+                - - 1.724
+                  - 5.961
+                - - 3.448
+                  - 5.961
+                - - 3.448
+                  - 7.948
+                - - 1.724
+                  - 7.948
+                priority_label: Standard
+                localization_type: rssi_section
+                alert_on_exit: false
+              C4:
+                center_x: 4.305
+                center_y: 6.955
+                polygon:
+                - - 3.448
+                  - 5.961
+                - - 5.162
+                  - 5.961
+                - - 5.162
+                  - 7.948
+                - - 3.448
+                  - 7.948
+                priority_label: Standard
+                localization_type: rssi_section
+                alert_on_exit: false
+              D4:
+                center_x: 6.029
+                center_y: 6.955
+                polygon:
+                - - 5.162
+                  - 5.961
+                - - 6.896
+                  - 5.961
+                - - 6.896
+                  - 7.948
+                - - 5.162
+                  - 7.948
+                priority_label: Standard
+                localization_type: rssi_section
+                alert_on_exit: false
+              E4:
+                center_x: 7.758
+                center_y: 6.955
+                polygon:
+                - - 6.896
+                  - 5.961
+                - - 8.62
+                  - 5.961
+                - - 8.62
+                  - 7.948
+                - - 6.896
+                  - 7.948
+                priority_label: Standard
+                localization_type: rssi_section
+                alert_on_exit: false
+              A5:
+                center_x: 0.862
+                center_y: 8.942
+                polygon:
+                - - 0
+                  - 7.948
+                - - 1.724
+                  - 7.948
+                - - 1.724
+                  - 9.935
+                - - 0
+                  - 9.935
+                priority_label: Standard
+                localization_type: rssi_section
+                alert_on_exit: false
+              B5:
+                center_x: 2.586
+                center_y: 8.942
+                polygon:
+                - - 1.724
+                  - 7.948
+                - - 3.448
+                  - 7.948
+                - - 3.448
+                  - 9.935
+                - - 1.724
+                  - 9.935
+                priority_label: Standard
+                localization_type: rssi_section
+                alert_on_exit: false
+              C5:
+                center_x: 4.305
+                center_y: 8.942
+                polygon:
+                - - 3.448
+                  - 7.948
+                - - 5.162
+                  - 7.948
+                - - 5.162
+                  - 9.935
+                - - 3.448
+                  - 9.935
+                priority_label: Standard
+                localization_type: rssi_section
+                alert_on_exit: false
+              D5:
+                center_x: 6.029
+                center_y: 8.942
+                polygon:
+                - - 5.162
+                  - 7.948
+                - - 6.896
+                  - 7.948
+                - - 6.896
+                  - 9.935
+                - - 5.162
+                  - 9.935
+                priority_label: Standard
+                localization_type: rssi_section
+                alert_on_exit: false
+              E5:
+                center_x: 7.758
+                center_y: 8.942
+                polygon:
+                - - 6.896
+                  - 7.948
+                - - 8.62
+                  - 7.948
+                - - 8.62
+                  - 9.935
+                - - 6.896
+                  - 9.935
+                priority_label: Standard
+                localization_type: rssi_section
+                alert_on_exit: false
+              A6:
+                center_x: 0.862
+                center_y: 10.928
+                polygon:
+                - - 1.724
+                  - 11.922
+                - - 0
+                  - 11.922
+                - - 0
+                  - 9.935
+                - - 1.724
+                  - 9.935
+                priority_label: Standard
+                localization_type: rssi_section
+                alert_on_exit: false
+              B6:
+                center_x: 2.586
+                center_y: 10.928
+                polygon:
+                - - 1.724
+                  - 11.922
+                - - 3.448
+                  - 11.922
+                - - 3.448
+                  - 9.935
+                - - 1.724
+                  - 9.935
+                priority_label: Standard
+                localization_type: rssi_section
+                alert_on_exit: false
+              C6:
+                center_x: 4.305
+                center_y: 10.928
+                polygon:
+                - - 3.448
+                  - 9.935
+                - - 5.162
+                  - 9.935
+                - - 5.162
+                  - 11.922
+                - - 3.448
+                  - 11.922
+                priority_label: Standard
+                localization_type: rssi_section
+                alert_on_exit: false
+              D6:
+                center_x: 6.037
+                center_y: 10.928
+                polygon:
+                - - 5.162
+                  - 9.935
+                - - 6.896
+                  - 9.935
+                - - 6.93
+                  - 11.922
+                - - 5.162
+                  - 11.922
+                priority_label: Standard
+                localization_type: rssi_section
+                alert_on_exit: false
+              E6:
+                center_x: 7.766
+                center_y: 10.928
+                polygon:
+                - - 6.896
+                  - 9.935
+                - - 8.62
+                  - 9.935
+                - - 8.62
+                  - 11.922
+                - - 6.93
+                  - 11.922
+                priority_label: Standard
+                localization_type: rssi_section
+                alert_on_exit: false
+              A7:
+                center_x: 0.862
+                center_y: 12.916
+                polygon:
+                - - 0
+                  - 11.922
+                - - 1.724
+                  - 11.922
+                - - 1.724
+                  - 13.91
+                - - 0
+                  - 13.91
+                priority_label: Standard
+                localization_type: rssi_section
+                alert_on_exit: false
+              B7:
+                center_x: 2.574
+                center_y: 12.916
+                polygon:
+                - - 1.724
+                  - 11.922
+                - - 3.448
+                  - 11.922
+                - - 3.4
+                  - 13.91
+                - - 1.724
+                  - 13.91
+                priority_label: Standard
+                localization_type: rssi_section
+                alert_on_exit: false
+              C7:
+                center_x: 4.293
+                center_y: 12.916
+                polygon:
+                - - 3.448
+                  - 11.922
+                - - 5.162
+                  - 11.922
+                - - 5.162
+                  - 13.91
+                - - 3.4
+                  - 13.91
+                priority_label: Standard
+                localization_type: rssi_section
+                alert_on_exit: false
+              D7:
+                center_x: 6.037
+                center_y: 12.916
+                polygon:
+                - - 5.162
+                  - 11.922
+                - - 6.93
+                  - 11.922
+                - - 6.896
+                  - 13.91
+                - - 5.162
+                  - 13.91
+                priority_label: Standard
+                localization_type: rssi_section
+                alert_on_exit: false
+              E7:
+                center_x: 7.766
+                center_y: 12.916
+                polygon:
+                - - 6.93
+                  - 11.922
+                - - 8.62
+                  - 11.922
+                - - 8.62
+                  - 13.91
+                - - 6.896
+                  - 13.91
+                priority_label: Standard
+                localization_type: rssi_section
+                alert_on_exit: false
 mqtt:
   broker_host: localhost
   broker_port: 1883
@@ -37,4 +575,7 @@ cloud:
   s3_key_template: '{campus}_{building}_{floor}_latest.json'
   s3_cache_control: max-age=2
   radiomap_path: radiomap_{campus}_{building}_{floor}.json
-  csv_log_path: telemetry_log.csv
+  csv_trilat_log_path: trilat_log.csv
+  csv_finger_log_path: finger_log.csv
+  csv_ble_log_path: ble_log.csv
+  csv_tof_log_path: tof_log.csv

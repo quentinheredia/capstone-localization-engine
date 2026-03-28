@@ -214,6 +214,7 @@ class AnchorOut(BaseModel):
     device_status: str = "in_stock"
     flags: list = Field(default_factory=list)
     last_polled: Optional[datetime] = None
+    last_reached: Optional[datetime] = None
     username: str
     created_at: datetime
     class Config:

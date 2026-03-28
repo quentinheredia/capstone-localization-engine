@@ -205,6 +205,10 @@
           }),
         deleteAnchor: (id) =>
           api(PLATFORM_API, `/anchors/${id}`, { method: "DELETE" }),
+        pollAnchorsNow: () =>
+          api(PLATFORM_API, "/anchors/poll", { method: "POST" }),
+        pingDebug: (ip) =>
+          api(PLATFORM_API, "/anchors/ping-debug", { params: { ip } }),
         updateAnchor: (id, d) =>
           api(PLATFORM_API, `/anchors/${id}`, { method: "PATCH", body: d }),
         // Tags
@@ -242,6 +246,12 @@
           api(PLATFORM_API, "/engine/start", { method: "POST", params: p }),
         stopEngine: () => api(PLATFORM_API, "/engine/stop", { method: "POST" }),
         engineStatus: () => api(PLATFORM_API, "/engine/status"),
+        // Push generated config to engine WITHOUT starting the poll (used by Survey page)
+        engineLoadConfig: (campus_id, building, floor) =>
+          api(PLATFORM_API, "/engine/load-config", {
+            method: "POST",
+            params: { campus_id, building, floor },
+          }),
         // Floor Plan Editor
         getEditorData: (fid) => api(PLATFORM_API, `/floors/${fid}/editor-data`),
         saveEditorData: (fid, d) =>
@@ -274,6 +284,23 @@
         getEditorPdfUrl: (fid) => `${PLATFORM_API}/floors/${fid}/editor-pdf`,
         deleteEditorPdf: (fid) =>
           api(PLATFORM_API, `/floors/${fid}/editor-pdf`, { method: "DELETE" }),
+        importDxf: async (fid, file, scale) => {
+          const fd = new FormData();
+          fd.append("file", file);
+          const url = new URL(`${PLATFORM_API}/floors/${fid}/import-dxf`);
+          if (scale) url.searchParams.set("scale", String(scale));
+          const res = await fetch(url.toString(), { method: "POST", body: fd });
+          if (!res.ok) {
+            const t = await res.text();
+            throw new Error(t);
+          }
+          return res.json();
+        },
+        importRoomsJson: (fid, data) =>
+          api(PLATFORM_API, `/floors/${fid}/import-rooms-json`, {
+            method: "POST",
+            body: data,
+          }),
         // Access Levels
         listAccessLevels: (bid) =>
           api(PLATFORM_API, `/buildings/${bid}/access-levels`),
@@ -289,11 +316,19 @@
           }),
         deleteAccessLevel: (id) =>
           api(PLATFORM_API, `/access-levels/${id}`, { method: "DELETE" }),
+        // Client-side log writer — lets the frontend persist events the backend can't observe
+        clientLog: (level, message, source = "client", meta = null) =>
+          api(PLATFORM_API, "/client-log", {
+            method: "POST",
+            params: { level, message, source },
+            body: meta || undefined,
+          }),
       };
 
       const engine = {
         health: () => api(ENGINE_API, "/health"),
         status: () => api(ENGINE_API, "/status"),
+        config: () => api(ENGINE_API, "/config"),
         map: (method) =>
           api(ENGINE_API, "/map", { params: method ? { method } : {} }),
         devices: () => api(ENGINE_API, "/devices"),
@@ -303,6 +338,21 @@
           api(ENGINE_API, `/decisions/${method}`, { params: { limit } }),
         raw: () => api(ENGINE_API, "/raw"),
         logs: (p) => api(ENGINE_API, "/logs", { params: p }),
+        // Survey / fingerprint calibration
+        surveyTargets: () => api(ENGINE_API, "/survey/targets"),
+        surveyStart: (room_label, target_ssid, samples) =>
+          api(ENGINE_API, "/survey/start", {
+            method: "POST",
+            params: { room_label, target_ssid, samples },
+          }),
+        surveyStatus: () => api(ENGINE_API, "/survey/status"),
+        surveyCancel: () =>
+          api(ENGINE_API, "/survey/cancel", { method: "POST" }),
+        surveyRadiomap: () => api(ENGINE_API, "/survey/radiomap"),
+        surveyDeleteRoom: (room) =>
+          api(ENGINE_API, `/survey/radiomap/${encodeURIComponent(room)}`, {
+            method: "DELETE",
+          }),
       };
 
       // ─── SHARED COMPONENTS ───────────────────────────────────────────────
@@ -501,7 +551,11 @@
             ? "bg-emerald-400"
             : status === "polling"
               ? "bg-amber-400 pulse-dot"
-              : "bg-gray-300";
+              : status === "trying"
+                ? "bg-amber-400 pulse-dot"
+                : status === "offline"
+                  ? "bg-red-400"
+                  : "bg-gray-300";
         return h("span", {
           className: `inline-block w-2 h-2 rounded-full ${color}`,
         });
@@ -556,11 +610,150 @@
         return { data, error };
       }
 
+      // ─── CONNECTION MONITOR ──────────────────────────────────────────────
+      // Detects when the platform backend becomes unreachable and logs
+      // reconnections with downtime duration via POST /client-log.
+      function useConnectionMonitor() {
+        const [platformDown, setPlatformDown] = useState(false);
+
+        const [downtimeSecs, setDowntimeSecs] = useState(0);
+
+        const wasDownRef = useRef(false);
+
+        const downSinceRef = useRef(null);
+
+        // Require 2 consecutive failures before declaring the backend down.
+        // This prevents a single slow WebView2 localhost fetch from triggering
+        // the disconnection banner spuriously.
+        const consecutiveFailures = useRef(0);
+        const FAILURES_TO_DOWN = 2;
+        const FETCH_TIMEOUT_MS = 8000;
+
+        // Health-check loop — runs every 5s
+
+        useEffect(() => {
+          let active = true;
+
+          const check = async () => {
+            let isUp = false;
+
+            try {
+              const ctrl = new AbortController();
+
+              const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+
+              const res = await fetch(
+                `${PLATFORM_API.replace("/api/v1", "")}/health`,
+
+                { signal: ctrl.signal },
+              );
+
+              clearTimeout(timer);
+
+              isUp = res.ok;
+            } catch {
+              isUp = false;
+            }
+
+            if (!active) return;
+
+            if (!isUp) {
+              consecutiveFailures.current += 1;
+            } else {
+              consecutiveFailures.current = 0;
+            }
+
+            if (!isUp && consecutiveFailures.current >= FAILURES_TO_DOWN && !wasDownRef.current) {
+              // Transition: up → down (only after FAILURES_TO_DOWN consecutive misses)
+
+              wasDownRef.current = true;
+
+              downSinceRef.current = Date.now();
+
+              setPlatformDown(true);
+
+              setDowntimeSecs(0);
+            } else if (isUp && wasDownRef.current) {
+              // Transition: down → up
+
+              wasDownRef.current = false;
+
+              const downtime = Math.round(
+                (Date.now() - downSinceRef.current) / 1000,
+              );
+
+              const wentDown = new Date(downSinceRef.current).toISOString();
+
+              downSinceRef.current = null;
+
+              setPlatformDown(false);
+
+              setDowntimeSecs(0);
+
+              // Write reconnect log now that backend is reachable again
+
+              platform
+
+                .clientLog(
+                  "warn",
+
+                  `Frontend reconnected to platform backend — was unreachable for ${downtime}s`,
+
+                  "client",
+
+                  { downtime_s: downtime, went_down_at: wentDown },
+                )
+
+                .catch(() => {});
+            }
+          };
+
+          check();
+
+          const id = setInterval(check, 5000);
+
+          return () => {
+            active = false;
+
+            clearInterval(id);
+          };
+        }, []);
+
+        // Ticker — updates elapsed seconds every second while platform is down
+
+        useEffect(() => {
+          if (!platformDown) return;
+
+          const id = setInterval(() => {
+            if (downSinceRef.current) {
+              setDowntimeSecs(
+                Math.round((Date.now() - downSinceRef.current) / 1000),
+              );
+            }
+          }, 1000);
+
+          return () => clearInterval(id);
+        }, [platformDown]);
+
+        const downtimeLabel = useMemo(() => {
+          if (downtimeSecs < 60) return `${downtimeSecs}s`;
+
+          const m = Math.floor(downtimeSecs / 60);
+
+          const s = downtimeSecs % 60;
+
+          return `${m}m ${s}s`;
+        }, [downtimeSecs]);
+
+        return { platformDown, downtimeLabel };
+      }
+
       // ─── NAV / LAYOUT ────────────────────────────────────────────────────
 
       const PAGES = [
         { id: "wizard", label: "Setup", icon: "\u2699\uFE0F" },
         { id: "localize", label: "Localization", icon: "\uD83C\uDFF7\uFE0F" },
+        { id: "survey", label: "Survey", icon: "\uD83D\uDCCD" },
         { id: "map", label: "Map", icon: "\uD83D\uDDFA\uFE0F" },
         { id: "devices", label: "Devices", icon: "\uD83D\uDCE1" },
         { id: "logs", label: "Logs", icon: "\uD83D\uDCCB" },
@@ -638,7 +831,14 @@
         );
       }
 
-      function Layout({ page, setPage, engineHealth, children }) {
+      function Layout({
+        page,
+        setPage,
+        engineHealth,
+        platformDown,
+        downtimeLabel,
+        children,
+      }) {
         return h(
           "div",
           { className: "flex" },
@@ -646,6 +846,25 @@
           h(
             "main",
             { className: "flex-1 ml-60 min-h-screen bg-surface" },
+            platformDown &&
+              h(
+                "div",
+                {
+                  className:
+                    "flex items-center gap-3 bg-red-600 text-white px-6 py-2 text-sm font-medium",
+                },
+                h("span", { className: "text-base" }, "⚠"),
+                h(
+                  "span",
+                  null,
+                  `Platform backend unreachable — disconnected for ${downtimeLabel}`,
+                ),
+                h(
+                  "span",
+                  { className: "ml-auto text-red-200 text-xs" },
+                  "Retrying every 5s…",
+                ),
+              ),
             h("div", { className: "max-w-6xl mx-auto px-8 py-8" }, children),
           ),
         );
@@ -1281,6 +1500,25 @@
         const [allFloors, setAllFloors] = useState([]);
         const [dragPt, setDragPt] = useState(null);
         const [dragStart, setDragStart] = useState(null);
+        // Multi-point selection (shift+click)
+        const [multiSel, setMultiSel] = useState(new Set()); // Set of point IDs
+        const [multiEditX, setMultiEditX] = useState("");
+        const [multiEditY, setMultiEditY] = useState("");
+        // Copy/paste clipboard: array of {x, y} relative to centroid
+        const [clipboard, setClipboard] = useState(null); // null | {pts: [{dx,dy}], centroid:{x,y}}
+        const [pasteCount, setPasteCount] = useState(0); // tracks successive pastes for offset
+        // Zoom / pan state
+        const [vb, setVb] = useState({ x: 0, y: 0, w: 900, h: 600 });
+        const vbRef = useRef({ x: 0, y: 0, w: 900, h: 600 });
+        const [panDrag, setPanDrag] = useState(null); // {clientX, clientY, vbSnap}
+        // DXF import state
+        const [dxfWalls, setDxfWalls] = useState([]);
+        const [dxfRooms, setDxfRooms] = useState([]);
+        const [dxfImporting, setDxfImporting] = useState(false);
+        const [dxfMsg, setDxfMsg] = useState(null);
+        const [roomJsonText, setRoomJsonText] = useState("");
+        const [roomImporting, setRoomImporting] = useState(false);
+        const [roomImportMsg, setRoomImportMsg] = useState(null);
 
         const svgRef = useRef(null);
         const [dims, setDims] = useState({ w: 900, h: 600 });
@@ -1289,14 +1527,18 @@
         const fh = floor.height_m || 15;
         const PADDING = 40;
 
-        // Responsive sizing
+        // Responsive sizing — reset viewBox when container size changes
         useEffect(() => {
           const ro = new ResizeObserver((entries) => {
             for (const e of entries) {
               const w = e.contentRect.width;
               if (w > 0) {
                 const aspect = fh / fw;
-                setDims({ w, h: Math.max(350, w * aspect) });
+                const newH = Math.max(350, Math.min(700, w * aspect));
+                setDims({ w, h: newH });
+                const freshVb = { x: 0, y: 0, w, h: newH };
+                vbRef.current = freshVb;
+                setVb(freshVb);
               }
             }
           });
@@ -1312,6 +1554,50 @@
         const ty = (v) => PADDING + v * sc;
         const fromSvgX = (px) => (px - PADDING) / sc;
         const fromSvgY = (py) => (py - PADDING) / sc;
+
+        // Accurate SVG coordinate from a pointer event using the CTM.
+        // Handles viewBox zoom/pan and any CSS scaling automatically.
+        const clientToSVG = useCallback((e) => {
+          const svgEl = svgRef.current;
+          if (!svgEl) return { x: 0, y: 0 };
+          const pt = svgEl.createSVGPoint();
+          pt.x = e.clientX;
+          pt.y = e.clientY;
+          return pt.matrixTransform(svgEl.getScreenCTM().inverse());
+        }, []);
+
+        // Scroll-wheel zoom (must be non-passive to preventDefault)
+        useEffect(() => {
+          const svgEl = svgRef.current;
+          if (!svgEl) return;
+          const onWheel = (e) => {
+            e.preventDefault();
+            const cur = vbRef.current;
+            const factor = e.deltaY < 0 ? 1.25 : 1 / 1.25;
+            // Clamp zoom between 0.5× and 20× of original dims
+            const minW = dims.w / 20;
+            const maxW = dims.w * 1.5;
+            const newW = Math.max(minW, Math.min(maxW, cur.w / factor));
+            const newH = newW * (cur.h / cur.w);
+            // Zoom to cursor
+            const pt = svgEl.createSVGPoint();
+            pt.x = e.clientX;
+            pt.y = e.clientY;
+            const anchor = pt.matrixTransform(svgEl.getScreenCTM().inverse());
+            const fx = (anchor.x - cur.x) / cur.w;
+            const fy = (anchor.y - cur.y) / cur.h;
+            const newVb = {
+              x: anchor.x - fx * newW,
+              y: anchor.y - fy * newH,
+              w: newW,
+              h: newH,
+            };
+            vbRef.current = newVb;
+            setVb(newVb);
+          };
+          svgEl.addEventListener("wheel", onWheel, { passive: false });
+          return () => svgEl.removeEventListener("wheel", onWheel);
+        }, [dims.w, dims.h]);
 
         const SNAP = 0.15; // metres
         const snapToPoint = (wx, wy) => {
@@ -1382,6 +1668,8 @@
               }
               if (res.default_grid_size_m) setGridSize(res.default_grid_size_m);
               setHasPdf(!!res.has_pdf);
+              if (d.dxf_walls?.length) setDxfWalls(d.dxf_walls);
+              if (d.dxf_rooms?.length) setDxfRooms(d.dxf_rooms);
             })
             .catch(() => {});
           if (building) {
@@ -1425,23 +1713,121 @@
         // Mark dirty on changes
         const markDirty = () => setDirty(true);
 
+        // Live refs for keyboard handler (must be after markDirty is defined)
+        const pointsRef = useRef(points);
+        const selectedRef = useRef(selected);
+        const multiSelRef = useRef(multiSel);
+        const clipboardRef = useRef(clipboard);
+        const pasteCountRef = useRef(pasteCount);
+        useEffect(() => {
+          pointsRef.current = points;
+        }, [points]);
+        useEffect(() => {
+          selectedRef.current = selected;
+        }, [selected]);
+        useEffect(() => {
+          multiSelRef.current = multiSel;
+        }, [multiSel]);
+        useEffect(() => {
+          clipboardRef.current = clipboard;
+        }, [clipboard]);
+        useEffect(() => {
+          pasteCountRef.current = pasteCount;
+        }, [pasteCount]);
+
+        // Ctrl+C / Ctrl+V keyboard shortcuts
+        useEffect(() => {
+          const onKey = (e) => {
+            const tag = document.activeElement?.tagName?.toLowerCase();
+            if (tag === "input" || tag === "textarea" || tag === "select")
+              return;
+            if (!e.ctrlKey && !e.metaKey) return;
+
+            if (e.key === "c" || e.key === "C") {
+              const pts = pointsRef.current,
+                ms = multiSelRef.current,
+                sel = selectedRef.current;
+              let ids = [];
+              if (ms.size >= 1) ids = [...ms];
+              else if (sel?.type === "point") ids = [sel.id];
+              if (!ids.length) return;
+              e.preventDefault();
+              const srcPts = ids
+                .map((id) => pts.find((p) => p.id === id))
+                .filter(Boolean);
+              if (!srcPts.length) return;
+              const cx = srcPts.reduce((s, p) => s + p.x, 0) / srcPts.length;
+              const cy = srcPts.reduce((s, p) => s + p.y, 0) / srcPts.length;
+              setClipboard({
+                pts: srcPts.map((p) => ({ dx: p.x - cx, dy: p.y - cy })),
+                centroid: { x: cx, y: cy },
+              });
+              setPasteCount(0);
+            } else if (e.key === "v" || e.key === "V") {
+              const cb = clipboardRef.current;
+              if (!cb) return;
+              e.preventDefault();
+              const n = pasteCountRef.current + 1,
+                OFFSET = 0.5,
+                ox = cb.centroid.x + n * OFFSET,
+                oy = cb.centroid.y + n * OFFSET;
+              const newIds = new Set();
+              setPoints((prev) => {
+                const next = [...prev];
+                cb.pts.forEach(({ dx, dy }) => {
+                  const id = `p${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+                  newIds.add(id);
+                  next.push({
+                    id,
+                    x: Math.max(0, ox + dx),
+                    y: Math.max(0, oy + dy),
+                  });
+                });
+                return next;
+              });
+              if (newIds.size === 1) {
+                setSelected({ type: "point", id: [...newIds][0] });
+                setMultiSel(new Set());
+              } else {
+                setMultiSel(new Set(newIds));
+              }
+              setPasteCount(n);
+              markDirty();
+            }
+          };
+          window.addEventListener("keydown", onKey);
+          return () => window.removeEventListener("keydown", onKey);
+        }, []);
+
         // SVG click handler
         const handleSvgClick = (e) => {
           if (dragPt) return; // was a drag, not a click
-          const svgEl = svgRef.current;
-          if (!svgEl) return;
-          const rect = svgEl.getBoundingClientRect();
-          const wx = fromSvgX(((e.clientX - rect.left) / rect.width) * dims.w);
-          const wy = fromSvgY(((e.clientY - rect.top) / rect.height) * dims.h);
+          if (panDrag) return; // was a pan, not a click
+          const svgPt = clientToSVG(e);
+          const wx = fromSvgX(svgPt.x);
+          const wy = fromSvgY(svgPt.y);
 
           if (wx < 0 || wx > fw || wy < 0 || wy > fh) return;
 
           if (tool === "point") {
             const existing = snapToPoint(wx, wy);
-            if (existing) {
+            // Shift+click on existing point → toggle multi-selection
+            if (e.shiftKey && existing) {
+              setMultiSel((prev) => {
+                const next = new Set(prev);
+                if (next.has(existing.id)) next.delete(existing.id);
+                else next.add(existing.id);
+                return next;
+              });
               setSelected({ type: "point", id: existing.id });
               return;
             }
+            if (existing) {
+              setSelected({ type: "point", id: existing.id });
+              if (!e.shiftKey) setMultiSel(new Set());
+              return;
+            }
+            if (e.shiftKey) return; // shift+click on empty space does nothing
             const snapped = snapToGrid(wx, wy);
             const np = {
               id: fpId("p"),
@@ -1450,6 +1836,7 @@
             };
             setPoints((prev) => [...prev, np]);
             setSelected({ type: "point", id: np.id });
+            setMultiSel(new Set());
             markDirty();
           } else if (tool === "line") {
             // Compute snapped position: right-angle from lineStart, then grid snap
@@ -1534,9 +1921,23 @@
           } else if (tool === "select") {
             const hit = snapToPoint(wx, wy);
             if (hit) {
-              setSelected({ type: "point", id: hit.id });
+              if (e.shiftKey) {
+                // Shift+click → add/remove from multi-selection
+                setMultiSel((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(hit.id)) next.delete(hit.id);
+                  else next.add(hit.id);
+                  return next;
+                });
+                setSelected({ type: "point", id: hit.id });
+              } else {
+                setSelected({ type: "point", id: hit.id });
+                setMultiSel(new Set());
+              }
               return;
             }
+            // Non-shift click on empty space clears multi-selection
+            if (!e.shiftKey) setMultiSel(new Set());
             // Check room hit
             for (const rm of editorRooms) {
               const poly = rm.pointIds
@@ -1596,14 +1997,22 @@
           }
         };
 
-        // Point dragging
+        // Point dragging + viewport panning (right-click drag)
         const handleSvgMouseDown = (e) => {
+          // Right-click or middle-click → pan viewport
+          if (e.button === 2 || e.button === 1) {
+            setPanDrag({
+              clientX: e.clientX,
+              clientY: e.clientY,
+              vbSnap: vbRef.current,
+            });
+            e.preventDefault();
+            return;
+          }
           if (tool !== "select") return;
-          const svgEl = svgRef.current;
-          if (!svgEl) return;
-          const rect = svgEl.getBoundingClientRect();
-          const wx = fromSvgX(((e.clientX - rect.left) / rect.width) * dims.w);
-          const wy = fromSvgY(((e.clientY - rect.top) / rect.height) * dims.h);
+          const svgPt = clientToSVG(e);
+          const wx = fromSvgX(svgPt.x);
+          const wy = fromSvgY(svgPt.y);
           const hit = snapToPoint(wx, wy);
           if (hit) {
             setDragPt(hit.id);
@@ -1612,44 +2021,47 @@
           }
         };
         const handleSvgMouseMove = (e) => {
+          // Pan viewport
+          if (panDrag) {
+            const svgEl = svgRef.current;
+            if (!svgEl) return;
+            const cur = panDrag.vbSnap;
+            const rect = svgEl.getBoundingClientRect();
+            const dxScreen = e.clientX - panDrag.clientX;
+            const dyScreen = e.clientY - panDrag.clientY;
+            // Convert screen delta to SVG-space delta
+            const dxSvg = (dxScreen / rect.width) * cur.w;
+            const dySvg = (dyScreen / rect.height) * cur.h;
+            const newVb = { ...cur, x: cur.x - dxSvg, y: cur.y - dySvg };
+            vbRef.current = newVb;
+            setVb(newVb);
+            return;
+          }
           if (!dragPt) return;
-          const svgEl = svgRef.current;
-          if (!svgEl) return;
-          const rect = svgEl.getBoundingClientRect();
-          const wx = Math.max(
-            0,
-            Math.min(
-              fw,
-              fromSvgX(((e.clientX - rect.left) / rect.width) * dims.w),
-            ),
-          );
-          const wy = Math.max(
-            0,
-            Math.min(
-              fh,
-              fromSvgY(((e.clientY - rect.top) / rect.height) * dims.h),
-            ),
-          );
+          const svgPt = clientToSVG(e);
+          const wx = Math.max(0, Math.min(fw, fromSvgX(svgPt.x)));
+          const wy = Math.max(0, Math.min(fh, fromSvgY(svgPt.y)));
           const dragSnapped = snapToGrid(wx, wy);
           setPoints((prev) =>
             prev.map((p) =>
               p.id === dragPt
-                ? {
-                    ...p,
-                    x: dragSnapped.x,
-                    y: dragSnapped.y,
-                  }
+                ? { ...p, x: dragSnapped.x, y: dragSnapped.y }
                 : p,
             ),
           );
         };
-        const handleSvgMouseUp = () => {
+        const handleSvgMouseUp = (e) => {
+          if (panDrag) {
+            setPanDrag(null);
+            return;
+          }
           if (dragPt) {
             markDirty();
             setDragPt(null);
             setDragStart(null);
           }
         };
+        const handleContextMenu = (e) => e.preventDefault();
 
         // Geometry helpers
         function pointInPoly(x, y, poly) {
@@ -1813,6 +2225,33 @@
             ? points.find((p) => p.id === selected.id)
             : null;
 
+        // ── Multi-selection axis detection ─────────────────────────────────
+        // Collect all points in the multi-selection set
+        const multiSelPts = points.filter((p) => multiSel.has(p.id));
+        // Axis tolerance: points are "same axis" if within 5cm of each other
+        const AXIS_TOL = 0.05;
+        const multiAxisX =
+          multiSelPts.length >= 2 &&
+          multiSelPts.every((p) => Math.abs(p.x - multiSelPts[0].x) < AXIS_TOL);
+        const multiAxisY =
+          multiSelPts.length >= 2 &&
+          multiSelPts.every((p) => Math.abs(p.y - multiSelPts[0].y) < AXIS_TOL);
+        // Shared values (average of the axis values)
+        const sharedX = multiSelPts.length
+          ? Math.round(
+              (multiSelPts.reduce((s, p) => s + p.x, 0) / multiSelPts.length) *
+                1000,
+            ) / 1000
+          : 0;
+        const sharedY = multiSelPts.length
+          ? Math.round(
+              (multiSelPts.reduce((s, p) => s + p.y, 0) / multiSelPts.length) *
+                1000,
+            ) / 1000
+          : 0;
+        // Whether we should show the multi-select panel
+        const showMultiPanel = multiSel.size >= 2;
+
         return h(
           "div",
           { className: "fade-in" },
@@ -1852,8 +2291,17 @@
           ),
           h(
             "div",
-            { className: "text-sm text-muted mb-3" },
-            `${floor.name} \u2014 ${fw}m \u00D7 ${fh}m`,
+            { className: "flex items-center justify-between mb-2" },
+            h(
+              "span",
+              { className: "text-sm text-muted" },
+              `${floor.name} \u2014 ${fw}m \u00D7 ${fh}m`,
+            ),
+            h(
+              "span",
+              { className: "text-xs text-muted opacity-60" },
+              "Scroll to zoom  ·  Right-click drag to pan",
+            ),
           ),
 
           // Toolbar
@@ -1878,6 +2326,70 @@
                 },
                 `${t.icon} ${t.label}`,
               ),
+            ),
+            h("div", { className: "w-px h-6 bg-border mx-2" }),
+            // Zoom controls
+            h(
+              "button",
+              {
+                title: "Zoom in (or scroll up)",
+                onClick: () => {
+                  const cur = vbRef.current;
+                  const newW = Math.max(dims.w / 20, cur.w / 1.4);
+                  const newH = newW * (cur.h / cur.w);
+                  const cx = cur.x + cur.w / 2,
+                    cy = cur.y + cur.h / 2;
+                  const newVb = {
+                    x: cx - newW / 2,
+                    y: cy - newH / 2,
+                    w: newW,
+                    h: newH,
+                  };
+                  vbRef.current = newVb;
+                  setVb(newVb);
+                },
+                className:
+                  "px-2 py-1 rounded text-sm bg-surface-dim hover:bg-panel border border-transparent hover:border-border text-ink-secondary",
+              },
+              "＋",
+            ),
+            h(
+              "button",
+              {
+                title: "Zoom out (or scroll down)",
+                onClick: () => {
+                  const cur = vbRef.current;
+                  const newW = Math.min(dims.w * 1.5, cur.w * 1.4);
+                  const newH = newW * (cur.h / cur.w);
+                  const cx = cur.x + cur.w / 2,
+                    cy = cur.y + cur.h / 2;
+                  const newVb = {
+                    x: cx - newW / 2,
+                    y: cy - newH / 2,
+                    w: newW,
+                    h: newH,
+                  };
+                  vbRef.current = newVb;
+                  setVb(newVb);
+                },
+                className:
+                  "px-2 py-1 rounded text-sm bg-surface-dim hover:bg-panel border border-transparent hover:border-border text-ink-secondary",
+              },
+              "－",
+            ),
+            h(
+              "button",
+              {
+                title: "Reset zoom to fit",
+                onClick: () => {
+                  const freshVb = { x: 0, y: 0, w: dims.w, h: dims.h };
+                  vbRef.current = freshVb;
+                  setVb(freshVb);
+                },
+                className:
+                  "px-2 py-1 rounded text-sm bg-surface-dim hover:bg-panel border border-transparent hover:border-border text-ink-secondary",
+              },
+              "⊡ Fit",
             ),
             h("div", { className: "w-px h-6 bg-border mx-2" }),
             h(
@@ -1947,15 +2459,19 @@
                 "svg",
                 {
                   ref: svgRef,
-                  viewBox: `0 0 ${dims.w} ${dims.h}`,
-                  className:
-                    "w-full bg-panel rounded-lg border border-border cursor-crosshair",
-                  style: { maxHeight: 600 },
+                  viewBox: `${vb.x} ${vb.y} ${vb.w} ${vb.h}`,
+                  className: "w-full bg-panel rounded-lg border border-border",
+                  style: {
+                    height: dims.h,
+                    cursor: panDrag ? "grabbing" : "crosshair",
+                    userSelect: "none",
+                  },
                   onClick: handleSvgClick,
                   onMouseDown: handleSvgMouseDown,
                   onMouseMove: handleSvgMouseMove,
                   onMouseUp: handleSvgMouseUp,
                   onMouseLeave: handleSvgMouseUp,
+                  onContextMenu: handleContextMenu,
                 },
                 // Background grid (snap grid lines)
                 ...(showEditorGrid
@@ -1999,6 +2515,56 @@
                     preserveAspectRatio: "none",
                     opacity: pdfOpacity,
                   }),
+                // DXF imported rooms (filled polygons — rendered before walls so walls overlay)
+                ...dxfRooms.map((rm, ri) => {
+                  if (!rm.polygon || rm.polygon.length < 3) return null;
+                  const pts = rm.polygon
+                    .map((p) => `${tx(p[0])},${ty(p[1])}`)
+                    .join(" ");
+                  const cx =
+                    rm.polygon.reduce((s, p) => s + p[0], 0) /
+                    rm.polygon.length;
+                  const cy =
+                    rm.polygon.reduce((s, p) => s + p[1], 0) /
+                    rm.polygon.length;
+                  return h(
+                    "g",
+                    { key: `dr${ri}` },
+                    h("polygon", {
+                      points: pts,
+                      fill: "#3b82f610",
+                      stroke: "#3b82f650",
+                      strokeWidth: 1,
+                      strokeDasharray: "4,3",
+                    }),
+                    h(
+                      "text",
+                      {
+                        x: tx(cx),
+                        y: ty(cy),
+                        textAnchor: "middle",
+                        dominantBaseline: "central",
+                        className: "text-[10px]",
+                        fill: "#3b82f6",
+                        opacity: 0.7,
+                      },
+                      rm.name,
+                    ),
+                  );
+                }),
+                // DXF wall segments (imported from .dxf file)
+                ...dxfWalls.map((w, wi) =>
+                  h("line", {
+                    key: `dw${wi}`,
+                    x1: tx(w.x1),
+                    y1: ty(w.y1),
+                    x2: tx(w.x2),
+                    y2: ty(w.y2),
+                    stroke: "#9ca3af",
+                    strokeWidth: 1.2,
+                    strokeLinecap: "round",
+                  }),
+                ),
                 // Floor boundary
                 h("rect", {
                   x: tx(0),
@@ -2194,19 +2760,34 @@
                 ...points.map((p) => {
                   const isSel =
                     selected?.type === "point" && selected.id === p.id;
+                  const isMultiSel = multiSel.has(p.id);
                   const isRoomPt = roomPts.includes(p.id);
                   return h(
                     "g",
                     { key: p.id },
+                    // Multi-select ring (outer)
+                    isMultiSel &&
+                      h("circle", {
+                        cx: tx(p.x),
+                        cy: ty(p.y),
+                        r: 11,
+                        fill: "none",
+                        stroke: "#3b82f6",
+                        strokeWidth: 2,
+                        strokeDasharray: "3,2",
+                        opacity: 0.8,
+                      }),
                     h("circle", {
                       cx: tx(p.x),
                       cy: ty(p.y),
                       r: isSel ? 7 : 5,
-                      fill: isRoomPt
-                        ? "#8b5cf6"
-                        : isSel
-                          ? "#ae5630"
-                          : "#374151",
+                      fill: isMultiSel
+                        ? "#2563eb"
+                        : isRoomPt
+                          ? "#8b5cf6"
+                          : isSel
+                            ? "#ae5630"
+                            : "#374151",
                       stroke: "#fff",
                       strokeWidth: 2,
                     }),
@@ -2231,6 +2812,137 @@
             h(
               "div",
               { className: "w-72 flex-shrink-0 space-y-3" },
+
+              // ── Multi-point selection panel ──────────────────────────────
+              showMultiPanel &&
+                h(
+                  Card,
+                  { title: `${multiSel.size} Points Selected` },
+                  // Summary
+                  h(
+                    "p",
+                    { className: "text-xs text-muted mb-3" },
+                    multiAxisX && multiAxisY
+                      ? `All share X ≈ ${sharedX} m and Y ≈ ${sharedY} m`
+                      : multiAxisX
+                        ? `All aligned on X ≈ ${sharedX} m — edit X to move together`
+                        : multiAxisY
+                          ? `All aligned on Y ≈ ${sharedY} m — edit Y to move together`
+                          : "Shift+click to select more points on the same axis",
+                  ),
+                  // X-axis edit (shown when all share same X, or always for convenience)
+                  h(
+                    "div",
+                    { className: "space-y-2" },
+                    (multiAxisX || multiAxisY || true) &&
+                      h(
+                        "div",
+                        { className: "flex items-end gap-2" },
+                        h(
+                          "div",
+                          { className: "flex-1" },
+                          h(Input, {
+                            label: `Set X (m)${multiAxisX ? " ← aligned" : ""}`,
+                            type: "number",
+                            value:
+                              multiEditX !== ""
+                                ? multiEditX
+                                : multiAxisX
+                                  ? String(sharedX)
+                                  : "",
+                            placeholder: multiAxisX
+                              ? String(sharedX)
+                              : "e.g. 5.2",
+                            onChange: (v) => setMultiEditX(v),
+                          }),
+                        ),
+                        h(
+                          "button",
+                          {
+                            className:
+                              "mb-0 px-3 py-2 rounded-md text-sm font-medium bg-accent text-white hover:bg-accent/90 disabled:opacity-40",
+                            disabled: multiEditX === "",
+                            onClick: () => {
+                              const newX = parseFloat(multiEditX);
+                              if (isNaN(newX)) return;
+                              setPoints((prev) =>
+                                prev.map((p) =>
+                                  multiSel.has(p.id)
+                                    ? {
+                                        ...p,
+                                        x: Math.max(0, Math.min(fw, newX)),
+                                      }
+                                    : p,
+                                ),
+                              );
+                              setMultiEditX("");
+                              markDirty();
+                            },
+                          },
+                          "Apply X",
+                        ),
+                      ),
+                    h(
+                      "div",
+                      { className: "flex items-end gap-2" },
+                      h(
+                        "div",
+                        { className: "flex-1" },
+                        h(Input, {
+                          label: `Set Y (m)${multiAxisY ? " ← aligned" : ""}`,
+                          type: "number",
+                          value:
+                            multiEditY !== ""
+                              ? multiEditY
+                              : multiAxisY
+                                ? String(sharedY)
+                                : "",
+                          placeholder: multiAxisY
+                            ? String(sharedY)
+                            : "e.g. 3.0",
+                          onChange: (v) => setMultiEditY(v),
+                        }),
+                      ),
+                      h(
+                        "button",
+                        {
+                          className:
+                            "mb-0 px-3 py-2 rounded-md text-sm font-medium bg-accent text-white hover:bg-accent/90 disabled:opacity-40",
+                          disabled: multiEditY === "",
+                          onClick: () => {
+                            const newY = parseFloat(multiEditY);
+                            if (isNaN(newY)) return;
+                            setPoints((prev) =>
+                              prev.map((p) =>
+                                multiSel.has(p.id)
+                                  ? { ...p, y: Math.max(0, Math.min(fh, newY)) }
+                                  : p,
+                              ),
+                            );
+                            setMultiEditY("");
+                            markDirty();
+                          },
+                        },
+                        "Apply Y",
+                      ),
+                    ),
+                    // Clear selection
+                    h(
+                      "button",
+                      {
+                        className:
+                          "w-full mt-1 px-3 py-1.5 rounded text-xs text-muted hover:text-ink bg-surface-dim hover:bg-panel border border-border",
+                        onClick: () => {
+                          setMultiSel(new Set());
+                          setMultiEditX("");
+                          setMultiEditY("");
+                        },
+                      },
+                      "✕ Clear selection",
+                    ),
+                  ),
+                ),
+
               // Selected element properties
               selPoint &&
                 h(
@@ -2498,6 +3210,166 @@
                     },
                     "+",
                   ),
+                ),
+              ),
+
+              // ── DXF / Room Import ─────────────────────────────────────
+              h(
+                Card,
+                { title: "Import Floor Plan" },
+                // DXF Walls
+                h(
+                  "div",
+                  { className: "mb-3" },
+                  h(
+                    "div",
+                    {
+                      className:
+                        "text-xs font-medium text-ink-secondary mb-1.5 uppercase tracking-wide",
+                    },
+                    "DXF Walls",
+                  ),
+                  h(
+                    "div",
+                    { className: "flex items-center gap-2" },
+                    h("input", {
+                      type: "file",
+                      accept: ".dxf",
+                      id: "dxf-file-input",
+                      className: "text-xs flex-1",
+                    }),
+                    h(
+                      Button,
+                      {
+                        size: "sm",
+                        variant: "secondary",
+                        disabled: dxfImporting,
+                        onClick: async () => {
+                          const inp = document.getElementById("dxf-file-input");
+                          const f = inp?.files?.[0];
+                          if (!f) {
+                            setDxfMsg({
+                              ok: false,
+                              text: "Select a .dxf file first",
+                            });
+                            return;
+                          }
+                          setDxfImporting(true);
+                          setDxfMsg(null);
+                          try {
+                            const res = await platform.importDxf(floor.id, f);
+                            setDxfWalls([]);
+                            // Reload editor data to get updated walls + dimensions
+                            const ed = await platform.getEditorData(floor.id);
+                            setDxfWalls(ed.data?.dxf_walls || []);
+                            setDxfRooms(ed.data?.dxf_rooms || []);
+                            setDxfMsg({
+                              ok: true,
+                              text: `Imported ${res.walls} walls · ${res.width_m}×${res.height_m} m`,
+                            });
+                          } catch (e) {
+                            setDxfMsg({ ok: false, text: e.message });
+                          } finally {
+                            setDxfImporting(false);
+                          }
+                        },
+                      },
+                      dxfImporting ? "…" : "Import",
+                    ),
+                  ),
+                  dxfMsg &&
+                    h(
+                      "div",
+                      {
+                        className: `text-xs mt-1 ${dxfMsg.ok ? "text-success" : "text-danger"}`,
+                      },
+                      dxfMsg.text,
+                    ),
+                  dxfWalls.length > 0 &&
+                    h(
+                      "div",
+                      { className: "text-xs text-muted mt-0.5" },
+                      `${dxfWalls.length} wall segments loaded`,
+                    ),
+                ),
+                // Room JSON
+                h(
+                  "div",
+                  null,
+                  h(
+                    "div",
+                    {
+                      className:
+                        "text-xs font-medium text-ink-secondary mb-1.5 uppercase tracking-wide",
+                    },
+                    "Rooms (JSON)",
+                  ),
+                  h(
+                    "div",
+                    { className: "text-xs text-muted mb-1" },
+                    'Paste FLOOR_PLAN_V2 dict: {"RoomName":{"bounds":[x0,y0,x1,y1],...}}',
+                  ),
+                  h("textarea", {
+                    value: roomJsonText,
+                    onChange: (e) => setRoomJsonText(e.target.value),
+                    rows: 5,
+                    placeholder: '{"Lobby":{"bounds":[-9,19,14,40]},...}',
+                    className:
+                      "w-full px-2 py-1.5 border border-border rounded text-xs bg-panel font-mono resize-y",
+                    style: { minHeight: 80 },
+                  }),
+                  h(
+                    "div",
+                    { className: "flex gap-1.5 mt-1.5" },
+                    h(
+                      Button,
+                      {
+                        size: "sm",
+                        variant: "secondary",
+                        disabled: roomImporting || !roomJsonText.trim(),
+                        onClick: async () => {
+                          let rooms;
+                          try {
+                            rooms = JSON.parse(roomJsonText);
+                          } catch (e) {
+                            setRoomImportMsg({
+                              ok: false,
+                              text: "Invalid JSON: " + e.message,
+                            });
+                            return;
+                          }
+                          setRoomImporting(true);
+                          setRoomImportMsg(null);
+                          try {
+                            const res = await platform.importRoomsJson(
+                              floor.id,
+                              { rooms },
+                            );
+                            // Reload dxf_rooms for editor display
+                            const ed = await platform.getEditorData(floor.id);
+                            setDxfRooms(ed.data?.dxf_rooms || []);
+                            setRoomImportMsg({
+                              ok: true,
+                              text: `Created ${res.rooms_created} rooms: ${res.rooms.join(", ")}`,
+                            });
+                          } catch (e) {
+                            setRoomImportMsg({ ok: false, text: e.message });
+                          } finally {
+                            setRoomImporting(false);
+                          }
+                        },
+                      },
+                      roomImporting ? "…" : "Import Rooms",
+                    ),
+                  ),
+                  roomImportMsg &&
+                    h(
+                      "div",
+                      {
+                        className: `text-xs mt-1 ${roomImportMsg.ok ? "text-success" : "text-danger"}`,
+                      },
+                      roomImportMsg.text,
+                    ),
                 ),
               ),
 
@@ -3192,6 +4064,8 @@
         showFpGrid = false,
         gridSize = 1.0,
         className = "",
+        dxfWalls = [],
+        dxfRooms = [],
       }) {
         const PADDING = 40;
         const svgRef = useRef(null);
@@ -3266,6 +4140,54 @@
               y2: ty(i),
               stroke: "#e5e7eb",
               strokeWidth: 0.5,
+            }),
+          ),
+          // DXF imported room outlines (before walls so walls draw on top)
+          ...dxfRooms.map((rm, ri) => {
+            if (!rm.polygon || rm.polygon.length < 3) return null;
+            const pts = rm.polygon
+              .map((p) => `${tx(p[0])},${ty(p[1])}`)
+              .join(" ");
+            const cx =
+              rm.polygon.reduce((s, p) => s + p[0], 0) / rm.polygon.length;
+            const cy =
+              rm.polygon.reduce((s, p) => s + p[1], 0) / rm.polygon.length;
+            return h(
+              "g",
+              { key: `dr${ri}` },
+              h("polygon", {
+                points: pts,
+                fill: "#3b82f610",
+                stroke: "#3b82f650",
+                strokeWidth: 1,
+                strokeDasharray: "4,3",
+              }),
+              h(
+                "text",
+                {
+                  x: tx(cx),
+                  y: ty(cy),
+                  textAnchor: "middle",
+                  dominantBaseline: "central",
+                  className: "text-[10px]",
+                  fill: "#3b82f6",
+                  opacity: 0.7,
+                },
+                rm.name,
+              ),
+            );
+          }),
+          // DXF wall segments
+          ...dxfWalls.map((w, wi) =>
+            h("line", {
+              key: `dw${wi}`,
+              x1: tx(w.x1),
+              y1: ty(w.y1),
+              x2: tx(w.x2),
+              y2: ty(w.y2),
+              stroke: "#6b7280",
+              strokeWidth: 1.5,
+              strokeLinecap: "round",
             }),
           ),
           // Floor boundary
@@ -3489,6 +4411,8 @@
         const [platformAnchors, setPlatformAnchors] = useState([]);
         const [showFpGrid, setShowFpGrid] = useState(false);
         const [floorGridSize, setFloorGridSize] = useState(1.0);
+        const [mapDxfWalls, setMapDxfWalls] = useState([]);
+        const [mapDxfRooms, setMapDxfRooms] = useState([]);
 
         // Load hierarchy from platform
         const { data: campuses } = useApi(() => platform.listCampuses());
@@ -3521,7 +4445,7 @@
           if (floors?.length && !selectedFloor) setSelectedFloor(floors[0]);
         }, [floors]);
 
-        // Load rooms + anchors for selected floor
+        // Load rooms, anchors, and DXF data for selected floor
         useEffect(() => {
           if (!selectedFloor) return;
           platform
@@ -3531,6 +4455,13 @@
           platform
             .listAnchors(selectedFloor.id)
             .then((a) => setPlatformAnchors(a || []))
+            .catch(() => {});
+          platform
+            .getEditorData(selectedFloor.id)
+            .then((ed) => {
+              setMapDxfWalls(ed.data?.dxf_walls || []);
+              setMapDxfRooms(ed.data?.dxf_rooms || []);
+            })
             .catch(() => {});
           setFloorGridSize(selectedFloor.default_grid_size_m || 1.0);
         }, [selectedFloor?.id]);
@@ -3647,6 +4578,8 @@
                   devices,
                   showFpGrid,
                   gridSize: floorGridSize,
+                  dxfWalls: mapDxfWalls,
+                  dxfRooms: mapDxfRooms,
                 }),
           ),
           // Device summary cards
@@ -3812,6 +4745,8 @@
         const [editId, setEditId] = useState(null); // anchor.id being edited
         const [editData, setEditData] = useState({});
         const [saving, setSaving] = useState(false);
+        const [polling, setPolling] = useState(false);
+        const [pollMsg, setPollMsg] = useState(null);
 
         // Registration form state
         const [form, setForm] = useState({
@@ -3827,10 +4762,53 @@
           password: "admin",
         });
         const [registering, setRegistering] = useState(false);
+        const [registerError, setRegisterError] = useState(null);
+
+        // Ping debug state
+        const [debugIp, setDebugIp] = useState("");
+        const [debugResult, setDebugResult] = useState(null);
+        const [debugLoading, setDebugLoading] = useState(false);
+
+        const handlePingDebug = async () => {
+          if (!debugIp.trim()) return;
+          setDebugLoading(true);
+          setDebugResult(null);
+          try {
+            const res = await platform.pingDebug(debugIp.trim());
+            setDebugResult(res);
+          } catch (e) {
+            setDebugResult({ error: e.message, reachable: false });
+          } finally {
+            setDebugLoading(false);
+          }
+        };
+
+        const handlePollNow = async () => {
+          setPolling(true);
+          setPollMsg(null);
+          try {
+            const res = await platform.pollAnchorsNow();
+            const online = res.results?.filter((r) => r.reachable).length ?? 0;
+            const total = res.polled ?? 0;
+            setPollMsg({
+              ok: true,
+              text: `Polled ${total} device${total !== 1 ? "s" : ""} — ${online} online`,
+            });
+            reload();
+          } catch (e) {
+            const msg = e.message?.includes("Failed to fetch")
+              ? "Cannot reach platform backend — is it running?"
+              : e.message;
+            setPollMsg({ ok: false, text: msg });
+          } finally {
+            setPolling(false);
+          }
+        };
 
         const handleRegister = async () => {
           if (!form.anchor_id.trim()) return;
           setRegistering(true);
+          setRegisterError(null);
           try {
             await platform.registerAnchor({
               ...form,
@@ -3851,7 +4829,10 @@
             setShowRegister(false);
             reload();
           } catch (e) {
-            alert(e.message);
+            const msg = e.message?.includes("Failed to fetch")
+              ? "Cannot reach platform backend — make sure the backend service is running on port 8080."
+              : e.message;
+            setRegisterError(msg);
           } finally {
             setRegistering(false);
           }
@@ -3922,6 +4903,7 @@
           "Device Status",
           "Flags",
           "Connectivity",
+          "Last Reached",
           "Floor",
           "Actions",
         ];
@@ -4052,6 +5034,15 @@
                       ),
                     ),
                   ),
+                  registerError &&
+                    h(
+                      "div",
+                      {
+                        className:
+                          "text-sm text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2",
+                      },
+                      registerError,
+                    ),
                   h(
                     "div",
                     { className: "flex gap-2 pt-1" },
@@ -4067,12 +5058,170 @@
                       Button,
                       {
                         variant: "ghost",
-                        onClick: () => setShowRegister(false),
+                        onClick: () => {
+                          setShowRegister(false);
+                          setRegisterError(null);
+                        },
                       },
                       "Cancel",
                     ),
                   ),
                 ),
+          ),
+
+          // ── Ping debug panel ────────────────────────────────────────────
+          h(
+            Card,
+            { title: "🔍 Ping Diagnostics" },
+            h(
+              "div",
+              { className: "space-y-3" },
+              h(
+                "p",
+                { className: "text-xs text-muted" },
+                "Run a verbose ping against any IP to see raw output, return code, and whether asyncio or blocking subprocess was used. Helps diagnose why the background poller shows devices as offline.",
+              ),
+              h(
+                "div",
+                { className: "flex gap-2 items-end" },
+                h(Input, {
+                  label: "IP Address",
+                  value: debugIp,
+                  onChange: setDebugIp,
+                  placeholder: "e.g. 192.168.1.19",
+                  className: "w-48",
+                }),
+                h(
+                  Button,
+                  {
+                    disabled: debugLoading || !debugIp.trim(),
+                    onClick: handlePingDebug,
+                    size: "sm",
+                  },
+                  debugLoading ? "Pinging…" : "Run Ping Test",
+                ),
+              ),
+              debugResult &&
+                h(
+                  "div",
+                  {
+                    className: `rounded border text-xs font-mono p-3 space-y-1 ${
+                      debugResult.reachable
+                        ? "bg-emerald-50 border-emerald-200"
+                        : "bg-red-50 border-red-200"
+                    }`,
+                  },
+                  h(
+                    "div",
+                    { className: "flex gap-4 flex-wrap font-semibold" },
+                    h(
+                      "span",
+                      null,
+                      `Result: ${debugResult.reachable ? "✅ REACHABLE" : "❌ UNREACHABLE"}`,
+                    ),
+                    debugResult.method &&
+                      h(
+                        "span",
+                        { className: "text-gray-500" },
+                        `Method: ${debugResult.method}`,
+                      ),
+                    debugResult.returncode != null &&
+                      h(
+                        "span",
+                        { className: "text-gray-500" },
+                        `Exit code: ${debugResult.returncode}`,
+                      ),
+                    debugResult.platform &&
+                      h(
+                        "span",
+                        { className: "text-gray-500" },
+                        `Platform: ${debugResult.platform}`,
+                      ),
+                  ),
+                  debugResult.cmd &&
+                    h(
+                      "div",
+                      { className: "text-gray-600" },
+                      `Command: ${debugResult.cmd}`,
+                    ),
+                  debugResult.error &&
+                    h(
+                      "div",
+                      { className: "text-red-700 font-semibold" },
+                      `Error: ${debugResult.error}`,
+                    ),
+                  debugResult.stdout &&
+                    h(
+                      "div",
+                      null,
+                      h(
+                        "div",
+                        { className: "text-gray-500 mb-0.5" },
+                        "stdout:",
+                      ),
+                      h(
+                        "pre",
+                        {
+                          className:
+                            "whitespace-pre-wrap text-gray-800 bg-white/60 rounded p-2",
+                        },
+                        debugResult.stdout,
+                      ),
+                    ),
+                  debugResult.stderr &&
+                    h(
+                      "div",
+                      null,
+                      h(
+                        "div",
+                        { className: "text-gray-500 mb-0.5" },
+                        "stderr:",
+                      ),
+                      h(
+                        "pre",
+                        {
+                          className:
+                            "whitespace-pre-wrap text-red-700 bg-white/60 rounded p-2",
+                        },
+                        debugResult.stderr,
+                      ),
+                    ),
+                  debugResult.tcp_probe &&
+                    h(
+                      "div",
+                      null,
+                      h(
+                        "div",
+                        { className: "text-gray-500 mb-0.5" },
+                        "TCP probe (common ports):",
+                      ),
+                      h(
+                        "div",
+                        { className: "flex gap-3 flex-wrap" },
+                        Object.entries(debugResult.tcp_probe).map(
+                          ([port, ok]) =>
+                            h(
+                              "span",
+                              {
+                                key: port,
+                                className:
+                                  ok === true
+                                    ? "text-emerald-700"
+                                    : "text-gray-400",
+                              },
+                              `${port}: ${ok === true ? "open" : ok === false ? "closed" : ok}`,
+                            ),
+                        ),
+                      ),
+                      debugResult.any_tcp_open &&
+                        h(
+                          "div",
+                          { className: "text-emerald-700 font-semibold mt-1" },
+                          "✅ TCP reachable — device is online but ICMP may be blocked by firewall",
+                        ),
+                    ),
+                ),
+            ),
           ),
 
           // ── Table ───────────────────────────────────────────────────────
@@ -4106,7 +5255,32 @@
                 { className: "text-sm text-muted ml-auto" },
                 `${items.length} anchor${items.length !== 1 ? "s" : ""}`,
               ),
+              // Manual poll button
+              h(
+                Button,
+                {
+                  variant: "ghost",
+                  size: "sm",
+                  disabled: polling,
+                  onClick: handlePollNow,
+                  title: "Ping all anchors now (auto-polls every 2.5 min)",
+                },
+                polling ? "Pinging…" : "📡 Poll Now",
+              ),
             ),
+            // Poll result message
+            pollMsg &&
+              h(
+                "div",
+                {
+                  className: `mb-3 px-3 py-2 rounded text-sm ${
+                    pollMsg.ok
+                      ? "bg-emerald-50 text-emerald-800"
+                      : "bg-red-50 text-red-800"
+                  }`,
+                },
+                pollMsg.text,
+              ),
             items.length === 0
               ? h(EmptyState, {
                   icon: "\uD83D\uDCE1",
@@ -4251,8 +5425,54 @@
                               "div",
                               { className: "flex items-center gap-1.5" },
                               h(StatusDot, { status: a.status }),
-                              h("span", { className: "text-xs" }, a.status),
+                              h(
+                                "span",
+                                {
+                                  className: `text-xs font-medium ${
+                                    a.status === "online"
+                                      ? "text-emerald-700"
+                                      : a.status === "trying"
+                                        ? "text-amber-700"
+                                        : a.status === "offline"
+                                          ? "text-red-700"
+                                          : "text-gray-500"
+                                  }`,
+                                },
+                                a.status === "trying" ? "trying…" : a.status,
+                              ),
                             ),
+                          ),
+                          // Last Reached
+                          h(
+                            "td",
+                            { className: "py-3 px-3 text-xs text-muted" },
+                            a.last_reached
+                              ? h(
+                                  "span",
+                                  {
+                                    title: new Date(
+                                      a.last_reached,
+                                    ).toLocaleString(),
+                                  },
+                                  (() => {
+                                    const diff =
+                                      Date.now() -
+                                      new Date(a.last_reached).getTime();
+                                    const mins = Math.floor(diff / 60000);
+                                    const secs = Math.floor(
+                                      (diff % 60000) / 1000,
+                                    );
+                                    if (mins > 60)
+                                      return `${Math.floor(mins / 60)}h ago`;
+                                    if (mins > 0) return `${mins}m ago`;
+                                    return `${secs}s ago`;
+                                  })(),
+                                )
+                              : h(
+                                  "span",
+                                  { className: "italic text-gray-400" },
+                                  "never",
+                                ),
                           ),
                           // Floor
                           h(
@@ -5074,15 +6294,20 @@
       }
 
       // Try pywebview native window first, fall back to in-app overlay
-      function _popOutMap(method) {
-        window.pywebview.api.open_map_window(method);
-        //  } else {
-        // Browser dev mode fallback — use in-app overlay
-        //fallbackExpand && fallbackExpand(method);
-        //}
+      function _popOutMap(method, fallbackExpand) {
+        if (window.pywebview && window.pywebview.api) {
+          // Desktop app — open a real native OS window on any monitor
+          window.pywebview.api.open_map_window(method).catch(() => {
+            // If the native call fails, fall back to in-app overlay
+            fallbackExpand && fallbackExpand(method);
+          });
+        } else {
+          // Browser dev mode — use in-app overlay
+          fallbackExpand && fallbackExpand(method);
+        }
       }
 
-      // Small map panel with pop-out / expand button
+      // Small map panel with both pop-out (native window) and expand (in-app overlay)
       function MethodMapPanel({ method, onExpand }) {
         const { data } = usePolling(
           () => engine.map(method).catch(() => null),
@@ -5115,15 +6340,30 @@
                 `${devices.length} device(s)`,
               ),
             ),
+            // Both buttons side by side
             h(
-              "button",
-              {
-                className:
-                  "text-xs text-muted hover:text-ink px-1.5 py-0.5 rounded hover:bg-panel border border-border",
-                title: "Open in separate window (drag to any monitor)",
-                onClick: () => _popOutMap(method),
-              },
-              "⧉ pop out",
+              "div",
+              { className: "flex items-center gap-1" },
+              h(
+                "button",
+                {
+                  className:
+                    "text-xs text-muted hover:text-ink px-1.5 py-0.5 rounded hover:bg-panel border border-border",
+                  title: "Expand in-app (fullscreen overlay)",
+                  onClick: () => onExpand && onExpand(method),
+                },
+                "⤢ expand",
+              ),
+              h(
+                "button",
+                {
+                  className:
+                    "text-xs text-muted hover:text-ink px-1.5 py-0.5 rounded hover:bg-panel border border-border",
+                  title: "Open in separate OS window (drag to any monitor)",
+                  onClick: () => _popOutMap(method, onExpand),
+                },
+                "⧉ pop out",
+              ),
             ),
           ),
           h(MethodMapSvg, {
@@ -5134,6 +6374,852 @@
             width: 260,
             height: 180,
           }),
+        );
+      }
+
+      // ─── SURVEY PAGE ─────────────────────────────────────────────────────────
+
+      function SurveyPage() {
+        const [roomInput, setRoomInput] = useState("");
+        const [ssidInput, setSsidInput] = useState("");
+        const [samples, setSamples] = useState(10);
+        const [msg, setMsg] = useState(null);
+        const [deleting, setDeleting] = useState(null);
+        const [confirmDelete, setConfirmDelete] = useState(null);
+        const [loadingCfg, setLoadingCfg] = useState(false);
+        const [selectedCampusId, setSelectedCampusId] = useState(null);
+        const [selectedBuilding, setSelectedBuilding] = useState("");
+        const [selectedFloor, setSelectedFloor] = useState("");
+
+        // Campus hierarchy for location selector
+        const { data: campuses } = useApi(() => platform.listCampuses());
+        useEffect(() => {
+          if (campuses?.length && !selectedCampusId) {
+            const c = campuses[0];
+            setSelectedCampusId(c.id);
+            const b = c.buildings?.[0];
+            if (b) {
+              setSelectedBuilding(b.name);
+              setSelectedFloor(b.floors?.[0]?.name ?? "");
+            }
+          }
+        }, [campuses]);
+
+        const activeCampus = campuses?.find((c) => c.id === selectedCampusId);
+        const activeBuilding = activeCampus?.buildings?.find(
+          (b) => b.name === selectedBuilding,
+        );
+
+        // Check engine health — if engine isn't reachable, show a clear message
+        const { data: engHealth } = usePolling(
+          () => engine.health().catch(() => null),
+          4000,
+        );
+        const engineReachable = engHealth?.ok === true;
+        const enginePollActive = engHealth?.poll_running === true;
+
+        // Poll survey status while running, slower when idle
+        const { data: surveyStatus } = usePolling(
+          () =>
+            engineReachable ? engine.surveyStatus().catch(() => null) : null,
+          2000,
+          [engineReachable],
+        );
+
+        // Poll radiomap summary
+        const { data: radiomapData, error: rmError } = usePolling(
+          () =>
+            engineReachable ? engine.surveyRadiomap().catch(() => null) : null,
+          5000,
+          [engineReachable],
+        );
+
+        // Load configured target SSIDs from the engine
+        const { data: targetsData, reload: reloadTargets } = useApi(() =>
+          engineReachable
+            ? engine.surveyTargets().catch(() => null)
+            : Promise.resolve(null),
+        );
+
+        const isRunning = surveyStatus?.status === "running";
+        const isDone = surveyStatus?.status === "done";
+        const progress = surveyStatus?.progress_pct ?? 0;
+        const collected = surveyStatus?.collected_samples ?? 0;
+        const total = surveyStatus?.total_samples ?? 0;
+        const targets = targetsData?.targets ?? [];
+        const rmRooms = radiomapData?.rooms ?? {};
+        const rmExists = radiomapData?.exists ?? false;
+        const totalRooms = radiomapData?.total_rooms ?? 0;
+
+        // Poll survey activity logs — faster while a survey is running
+        // (must be after isRunning is defined so the interval value is correct)
+        const { data: surveyLogs } = usePolling(
+          () =>
+            platform
+              .listEngineLogs({ source: "survey", limit: 30 })
+              .catch(() => null),
+          isRunning ? 3000 : 10000,
+          [isRunning],
+        );
+
+        const STATUS_STYLE = {
+          idle: "text-ink-secondary",
+          running: "text-sky-600 font-semibold",
+          done: "text-emerald-600 font-semibold",
+          cancelled: "text-amber-600",
+          error: "text-red-600 font-semibold",
+        };
+
+        const handleLoadConfig = async () => {
+          if (!selectedCampusId) {
+            setMsg({ ok: false, text: "Select a campus first." });
+            return;
+          }
+          setLoadingCfg(true);
+          setMsg(null);
+          try {
+            await platform.engineLoadConfig(
+              selectedCampusId,
+              selectedBuilding || undefined,
+              selectedFloor || undefined,
+            );
+            setMsg({
+              ok: true,
+              text: "Config loaded — engine knows its APs and targets.",
+            });
+            reloadTargets();
+          } catch (e) {
+            setMsg({ ok: false, text: `Config load failed: ${e.message}` });
+          } finally {
+            setLoadingCfg(false);
+          }
+        };
+
+        const handleStart = async () => {
+          if (!roomInput.trim()) {
+            setMsg({ ok: false, text: "Enter a room name." });
+            return;
+          }
+          if (!engineReachable) {
+            setMsg({
+              ok: false,
+              text: "Engine is not reachable on port 8000 — cannot start survey.",
+            });
+            return;
+          }
+          if (enginePollActive) {
+            setMsg({
+              ok: false,
+              text: "Localization poll is active — stop it first on the Localization page.",
+            });
+            return;
+          }
+          setMsg(null);
+          // Auto-push config before starting so env is always ready
+          try {
+            if (selectedCampusId) {
+              await platform.engineLoadConfig(
+                selectedCampusId,
+                selectedBuilding || undefined,
+                selectedFloor || undefined,
+              );
+            }
+          } catch (cfgErr) {
+            // Show as a non-blocking warning — engine may already have config
+            console.warn("Config auto-push failed:", cfgErr);
+          }
+          try {
+            await engine.surveyStart(
+              roomInput.trim(),
+              ssidInput.trim() || undefined,
+              samples,
+            );
+            setMsg({
+              ok: true,
+              text: `Survey started for "${roomInput.trim()}".`,
+            });
+          } catch (e) {
+            const txt = e.message?.includes("Failed to fetch")
+              ? "Cannot reach engine on port 8000 — make sure it is running."
+              : e.message;
+            setMsg({ ok: false, text: txt });
+          }
+        };
+
+        const handleCancel = async () => {
+          try {
+            await engine.surveyCancel();
+            setMsg({ ok: true, text: "Survey cancelled." });
+          } catch (e) {
+            setMsg({ ok: false, text: e.message });
+          }
+        };
+
+        const handleDeleteRoom = async (room) => {
+          if (confirmDelete !== room) {
+            setConfirmDelete(room);
+            return;
+          }
+          setConfirmDelete(null);
+          setDeleting(room);
+          try {
+            await engine.surveyDeleteRoom(room);
+          } catch (e) {
+            setMsg({ ok: false, text: e.message });
+          } finally {
+            setDeleting(null);
+          }
+        };
+
+        return h(
+          "div",
+          { className: "p-6 max-w-5xl mx-auto space-y-6" },
+
+          // ── Header ────────────────────────────────────────────────────────
+          h(
+            "div",
+            { className: "flex items-center justify-between" },
+            h(
+              "div",
+              null,
+              h(
+                "h1",
+                { className: "text-xl font-semibold text-ink" },
+                "Site Survey",
+              ),
+              h(
+                "p",
+                { className: "text-sm text-muted mt-0.5" },
+                "Calibrate the fingerprint radiomap — stand still in each room and collect RSSI samples.",
+              ),
+            ),
+            rmExists &&
+              h(
+                "span",
+                {
+                  className:
+                    "text-xs bg-emerald-50 text-emerald-700 border border-emerald-200 px-2.5 py-1 rounded-full font-medium",
+                },
+                `${totalRooms} room${totalRooms !== 1 ? "s" : ""} in radiomap`,
+              ),
+          ),
+
+          // ── Two-column layout ──────────────────────────────────────────────
+          h(
+            "div",
+            { className: "grid grid-cols-1 lg:grid-cols-2 gap-6" },
+
+            // ── LEFT: Survey Controls ──────────────────────────────────────
+            h(
+              "div",
+              {
+                className:
+                  "bg-panel rounded-xl border border-border p-5 space-y-4",
+              },
+
+              h(
+                "h2",
+                {
+                  className:
+                    "text-sm font-semibold text-ink-secondary uppercase tracking-wide",
+                },
+                "Survey Controls",
+              ),
+
+              // ── Location selector (drives which config.yaml gets generated) ─
+              h(
+                "div",
+                { className: "space-y-2 pb-3 border-b border-border" },
+                h(
+                  "div",
+                  { className: "flex items-center justify-between" },
+                  h(
+                    "p",
+                    { className: "text-xs font-medium text-ink-secondary" },
+                    "Location",
+                  ),
+                  h(
+                    "button",
+                    {
+                      className:
+                        "text-xs px-2 py-0.5 rounded border border-border text-muted hover:text-ink disabled:opacity-40",
+                      disabled: loadingCfg || isRunning,
+                      onClick: handleLoadConfig,
+                    },
+                    loadingCfg ? "Loading…" : "Load Config",
+                  ),
+                ),
+                h(
+                  "div",
+                  { className: "grid grid-cols-3 gap-2" },
+                  // Campus
+                  h(
+                    "select",
+                    {
+                      value: selectedCampusId ?? "",
+                      onChange: (e) => {
+                        const id = Number(e.target.value);
+                        setSelectedCampusId(id);
+                        const c = campuses?.find((x) => x.id === id);
+                        const b = c?.buildings?.[0];
+                        setSelectedBuilding(b?.name ?? "");
+                        setSelectedFloor(b?.floors?.[0]?.name ?? "");
+                      },
+                      disabled: isRunning,
+                      className:
+                        "text-xs px-2 py-1 rounded border border-border bg-surface",
+                    },
+                    (campuses || []).map((c) =>
+                      h("option", { key: c.id, value: c.id }, c.name),
+                    ),
+                  ),
+                  // Building
+                  h(
+                    "select",
+                    {
+                      value: selectedBuilding,
+                      onChange: (e) => {
+                        setSelectedBuilding(e.target.value);
+                        const b = activeCampus?.buildings?.find(
+                          (x) => x.name === e.target.value,
+                        );
+                        setSelectedFloor(b?.floors?.[0]?.name ?? "");
+                      },
+                      disabled: isRunning,
+                      className:
+                        "text-xs px-2 py-1 rounded border border-border bg-surface",
+                    },
+                    (activeCampus?.buildings || []).map((b) =>
+                      h("option", { key: b.name, value: b.name }, b.name),
+                    ),
+                  ),
+                  // Floor
+                  h(
+                    "select",
+                    {
+                      value: selectedFloor,
+                      onChange: (e) => setSelectedFloor(e.target.value),
+                      disabled: isRunning,
+                      className:
+                        "text-xs px-2 py-1 rounded border border-border bg-surface",
+                    },
+                    (activeBuilding?.floors || []).map((f) =>
+                      h("option", { key: f.name, value: f.name }, f.name),
+                    ),
+                  ),
+                ),
+                h(
+                  "p",
+                  { className: "text-xs text-muted" },
+                  "Config is auto-loaded when you start a survey. Click 'Load Config' to refresh targets.",
+                ),
+              ),
+
+              // Room name
+              h(
+                "div",
+                { className: "space-y-1" },
+                h(
+                  "label",
+                  { className: "text-xs font-medium text-ink-secondary" },
+                  "Room Name",
+                ),
+                h("input", {
+                  type: "text",
+                  value: roomInput,
+                  onChange: (e) => setRoomInput(e.target.value),
+                  placeholder: "e.g. 324A, Hallway, Lab",
+                  disabled: isRunning,
+                  className:
+                    "w-full px-3 py-1.5 text-sm rounded-md border border-border bg-surface focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-50",
+                }),
+              ),
+
+              // Target SSID
+              h(
+                "div",
+                { className: "space-y-1" },
+                h(
+                  "label",
+                  { className: "text-xs font-medium text-ink-secondary" },
+                  "Target SSID",
+                  targets.length > 0 &&
+                    h(
+                      "span",
+                      { className: "ml-1 text-muted font-normal" },
+                      `(configured: ${targets.join(", ")})`,
+                    ),
+                ),
+                h("input", {
+                  type: "text",
+                  value: ssidInput,
+                  onChange: (e) => setSsidInput(e.target.value),
+                  placeholder: targets[0] || "SSID of device to track",
+                  disabled: isRunning,
+                  className:
+                    "w-full px-3 py-1.5 text-sm rounded-md border border-border bg-surface focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-50",
+                }),
+                targets.length > 0 &&
+                  h(
+                    "p",
+                    { className: "text-xs text-muted" },
+                    "Leave blank to use the first configured target.",
+                  ),
+              ),
+
+              // Sample count
+              h(
+                "div",
+                { className: "space-y-1" },
+                h(
+                  "div",
+                  { className: "flex justify-between" },
+                  h(
+                    "label",
+                    { className: "text-xs font-medium text-ink-secondary" },
+                    "Samples",
+                  ),
+                  h(
+                    "span",
+                    { className: "text-xs font-semibold text-ink" },
+                    samples,
+                  ),
+                ),
+                h("input", {
+                  type: "range",
+                  min: 3,
+                  max: 50,
+                  step: 1,
+                  value: samples,
+                  onChange: (e) => setSamples(Number(e.target.value)),
+                  disabled: isRunning,
+                  className: "w-full accent-primary",
+                }),
+                h(
+                  "div",
+                  { className: "flex justify-between text-xs text-muted" },
+                  h("span", null, "3 (quick)"),
+                  h("span", null, "50 (thorough)"),
+                ),
+              ),
+
+              // Engine status banners
+              !engineReachable &&
+                h(
+                  "div",
+                  {
+                    className:
+                      "flex items-start gap-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2",
+                  },
+                  h("span", null, "❌"),
+                  h(
+                    "span",
+                    null,
+                    "Engine is not reachable (port 8000). Make sure the Hybrid engine is running. ",
+                    "The desktop app should start it automatically — try restarting the app.",
+                  ),
+                ),
+              engineReachable &&
+                enginePollActive &&
+                h(
+                  "div",
+                  {
+                    className:
+                      "flex items-start gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2",
+                  },
+                  h("span", null, "⚠"),
+                  h(
+                    "span",
+                    null,
+                    "The localization engine poll is active — stop it before surveying. ",
+                    "Go to Localization → Stop.",
+                  ),
+                ),
+              engineReachable &&
+                !enginePollActive &&
+                h(
+                  "div",
+                  {
+                    className:
+                      "flex items-start gap-2 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2",
+                  },
+                  h("span", null, "✅"),
+                  h("span", null, "Engine ready — you can start a survey."),
+                ),
+
+              // Buttons
+              h(
+                "div",
+                { className: "flex gap-2 pt-1" },
+                !isRunning
+                  ? h(
+                      "button",
+                      {
+                        onClick: handleStart,
+                        disabled:
+                          !roomInput.trim() ||
+                          !engineReachable ||
+                          enginePollActive,
+                        className:
+                          "flex-1 py-2 px-4 rounded-lg text-sm font-medium bg-primary text-white hover:bg-primary-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors",
+                      },
+                      "▶ Start Survey",
+                    )
+                  : h(
+                      "button",
+                      {
+                        onClick: handleCancel,
+                        className:
+                          "flex-1 py-2 px-4 rounded-lg text-sm font-medium bg-red-600 text-white hover:bg-red-700 transition-colors",
+                      },
+                      "⏹ Cancel",
+                    ),
+              ),
+
+              // Status / message
+              msg &&
+                h(
+                  "div",
+                  {
+                    className: `text-sm px-3 py-2 rounded-lg ${
+                      msg.ok
+                        ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                        : "bg-red-50 text-red-700 border border-red-200"
+                    }`,
+                  },
+                  msg.text,
+                ),
+
+              // Live progress
+              surveyStatus &&
+                surveyStatus.status !== "idle" &&
+                h(
+                  "div",
+                  { className: "space-y-2 pt-1" },
+                  h(
+                    "div",
+                    { className: "flex justify-between items-center" },
+                    h(
+                      "span",
+                      { className: "text-xs font-medium text-ink-secondary" },
+                      surveyStatus.room_label
+                        ? `Room: ${surveyStatus.room_label}`
+                        : "Survey",
+                    ),
+                    h(
+                      "span",
+                      {
+                        className: `text-xs ${STATUS_STYLE[surveyStatus.status] || ""}`,
+                      },
+                      surveyStatus.status === "running"
+                        ? `${collected} / ${total} samples`
+                        : surveyStatus.status.charAt(0).toUpperCase() +
+                            surveyStatus.status.slice(1),
+                    ),
+                  ),
+                  // Progress bar
+                  h(
+                    "div",
+                    {
+                      className:
+                        "w-full h-2 bg-surface-dim rounded-full overflow-hidden",
+                    },
+                    h("div", {
+                      className: `h-full rounded-full transition-all duration-300 ${
+                        surveyStatus.status === "done"
+                          ? "bg-emerald-500"
+                          : surveyStatus.status === "error"
+                            ? "bg-red-500"
+                            : "bg-sky-500"
+                      }`,
+                      style: { width: `${progress}%` },
+                    }),
+                  ),
+                  surveyStatus.error &&
+                    h(
+                      "p",
+                      { className: "text-xs text-red-600" },
+                      surveyStatus.error,
+                    ),
+                  surveyStatus.target_ssid &&
+                    h(
+                      "p",
+                      { className: "text-xs text-muted" },
+                      `SSID: ${surveyStatus.target_ssid}`,
+                    ),
+                ),
+            ),
+
+            // ── RIGHT: Radiomap Coverage ───────────────────────────────────
+            h(
+              "div",
+              {
+                className:
+                  "bg-panel rounded-xl border border-border p-5 space-y-4",
+              },
+
+              h(
+                "div",
+                { className: "flex items-center justify-between" },
+                h(
+                  "h2",
+                  {
+                    className:
+                      "text-sm font-semibold text-ink-secondary uppercase tracking-wide",
+                  },
+                  "Radiomap Coverage",
+                ),
+                !rmExists &&
+                  h(
+                    "span",
+                    { className: "text-xs text-muted italic" },
+                    "No radiomap yet",
+                  ),
+              ),
+
+              rmError &&
+                h(
+                  "p",
+                  { className: "text-xs text-red-600" },
+                  "Could not load radiomap — is the engine running?",
+                ),
+
+              !rmExists
+                ? h(
+                    "div",
+                    {
+                      className:
+                        "flex flex-col items-center justify-center py-12 text-center space-y-2",
+                    },
+                    h("div", { className: "text-4xl opacity-30" }, "📋"),
+                    h(
+                      "p",
+                      { className: "text-sm text-muted" },
+                      "Start a survey to begin building the radiomap.",
+                    ),
+                    h(
+                      "p",
+                      { className: "text-xs text-muted" },
+                      "Each surveyed room adds fingerprint vectors that improve localization accuracy.",
+                    ),
+                  )
+                : h(
+                    "div",
+                    { className: "space-y-1 overflow-y-auto max-h-96" },
+                    Object.entries(rmRooms)
+                      .sort(([a], [b]) => a.localeCompare(b))
+                      .map(([room, info]) =>
+                        h(
+                          "div",
+                          {
+                            key: room,
+                            className:
+                              "flex items-center justify-between px-3 py-2 rounded-lg hover:bg-surface-dim group transition-colors",
+                          },
+                          h(
+                            "div",
+                            { className: "flex items-center gap-3 min-w-0" },
+                            h(
+                              "span",
+                              {
+                                className:
+                                  "text-sm font-medium text-ink truncate",
+                              },
+                              room,
+                            ),
+                            h(
+                              "span",
+                              {
+                                className:
+                                  "text-xs bg-sky-50 text-sky-700 border border-sky-200 px-1.5 py-0.5 rounded-full whitespace-nowrap",
+                              },
+                              `${info.sample_count} samples`,
+                            ),
+                            info.ap_count > 0 &&
+                              h(
+                                "span",
+                                {
+                                  className:
+                                    "text-xs text-muted whitespace-nowrap",
+                                },
+                                `${info.ap_count} AP${info.ap_count !== 1 ? "s" : ""}`,
+                              ),
+                          ),
+                          h(
+                            "button",
+                            {
+                              onClick: () => handleDeleteRoom(room),
+                              disabled: deleting === room,
+                              title:
+                                confirmDelete === room
+                                  ? "Click again to confirm deletion"
+                                  : "Delete room from radiomap",
+                              className: `text-xs px-2 py-1 rounded transition-colors opacity-0 group-hover:opacity-100 ${
+                                confirmDelete === room
+                                  ? "bg-red-100 text-red-700 border border-red-300 opacity-100"
+                                  : "text-muted hover:text-red-600 hover:bg-red-50"
+                              }`,
+                            },
+                            deleting === room
+                              ? "…"
+                              : confirmDelete === room
+                                ? "Confirm delete"
+                                : "✕",
+                          ),
+                        ),
+                      ),
+                  ),
+
+              // Hint on coverage quality
+              rmExists &&
+                h(
+                  "div",
+                  {
+                    className: `text-xs px-3 py-2 rounded-lg border mt-2 ${
+                      totalRooms >= 5
+                        ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                        : totalRooms >= 2
+                          ? "bg-amber-50 text-amber-700 border-amber-200"
+                          : "bg-surface-dim text-muted border-border"
+                    }`,
+                  },
+                  totalRooms >= 5
+                    ? `✓ Good coverage — ${totalRooms} rooms surveyed. Fingerprinting is ready.`
+                    : totalRooms >= 2
+                      ? `${totalRooms} room${totalRooms !== 1 ? "s" : ""} surveyed. Survey more rooms for better accuracy.`
+                      : `Only ${totalRooms} room${totalRooms !== 1 ? "s" : ""} surveyed — fingerprinting may be inaccurate.`,
+                ),
+            ),
+          ),
+
+          // ── Survey Activity Log ───────────────────────────────────────────
+          h(
+            "div",
+            { className: "bg-panel border border-border rounded-xl p-4" },
+            h(
+              "div",
+              { className: "flex items-center justify-between mb-3" },
+              h(
+                "h3",
+                { className: "font-semibold text-ink text-sm" },
+                "Survey Activity",
+              ),
+              isRunning &&
+                h(
+                  "span",
+                  {
+                    className:
+                      "inline-flex items-center gap-1.5 text-xs text-sky-600 font-medium",
+                  },
+                  h("span", {
+                    className:
+                      "w-1.5 h-1.5 rounded-full bg-sky-500 pulse-dot inline-block",
+                  }),
+                  "Live",
+                ),
+            ),
+            !surveyLogs || surveyLogs.length === 0
+              ? h(
+                  "p",
+                  { className: "text-xs text-muted italic" },
+                  "No survey events recorded yet. Start a survey to see activity here.",
+                )
+              : h(
+                  "div",
+                  {
+                    className:
+                      "max-h-48 overflow-y-auto space-y-0 font-mono text-xs",
+                  },
+                  surveyLogs.map((entry) => {
+                    const levelColor =
+                      entry.level === "alert"
+                        ? "text-orange-600"
+                        : entry.level === "warn"
+                          ? "text-amber-600"
+                          : "text-emerald-600";
+                    const ts = new Date(entry.timestamp);
+                    const timeStr = ts.toLocaleTimeString([], {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                      second: "2-digit",
+                    });
+                    return h(
+                      "div",
+                      {
+                        key: entry.id,
+                        className:
+                          "flex gap-2 items-start py-1 border-b border-border/50 last:border-0",
+                      },
+                      h(
+                        "span",
+                        { className: "text-muted shrink-0 tabular-nums" },
+                        timeStr,
+                      ),
+                      h(
+                        "span",
+                        {
+                          className: `${levelColor} shrink-0 uppercase font-semibold`,
+                        },
+                        entry.level,
+                      ),
+                      h("span", { className: "text-ink" }, entry.message),
+                    );
+                  }),
+                ),
+          ),
+
+          // ── How-to guide ──────────────────────────────────────────────────
+          h(
+            "div",
+            {
+              className:
+                "bg-panel border border-border rounded-xl p-5 text-sm text-ink-secondary",
+            },
+            h(
+              "h3",
+              { className: "font-semibold text-ink mb-2 text-sm" },
+              "How to Survey a Floor",
+            ),
+            h(
+              "ol",
+              { className: "space-y-1.5 list-decimal list-inside text-xs" },
+              h(
+                "li",
+                null,
+                "Go to Localization and stop the engine (if running).",
+              ),
+              h(
+                "li",
+                null,
+                "Stand still at the centre of the room you want to calibrate.",
+              ),
+              h(
+                "li",
+                null,
+                "Enter the exact room name (must match your floor plan room IDs).",
+              ),
+              h(
+                "li",
+                null,
+                "Enter the target SSID or leave blank to use the configured default.",
+              ),
+              h(
+                "li",
+                null,
+                "Click Start Survey — wait for all samples to be collected.",
+              ),
+              h(
+                "li",
+                null,
+                "Move to the next room and repeat. Aim for ≥10 samples per room.",
+              ),
+              h(
+                "li",
+                null,
+                "Once all rooms are surveyed, restart localization — fingerprinting will activate automatically.",
+              ),
+            ),
+          ),
         );
       }
 
@@ -5157,7 +7243,7 @@
         }, [campuses]);
 
         const { data: engStatus } = usePolling(
-          () => engine.status().catch(() => null),
+          () => platform.engineStatus().catch(() => null),
           3000,
         );
         const { data: engHealth } = usePolling(
@@ -5174,7 +7260,10 @@
           [logLevelFilter],
         );
 
+        // Engine is running only if poll is actually active (direct engine check)
         const isRunning = engHealth?.poll_running === true;
+        const engineOnline =
+          engHealth?.ok === true || engStatus?.local_engine === "online";
         const logs = logsData || [];
 
         const LEVEL_STYLE = {
@@ -5205,13 +7294,35 @@
           setStarting(true);
           setMsg(null);
           try {
-            await platform.startEngine({
+            const res = await platform.startEngine({
               campus_id: selectedCampusId,
               poll_interval_s: pollInterval,
               testing_mode: testingMode,
               methods: selectedMethods.join(","),
             });
-            setMsg({ ok: true, text: "Engine start requested." });
+            if (res?.ok) {
+              const localOk =
+                res.local_config?.ok !== false && res.local_poll?.ok !== false;
+              setMsg({
+                ok: true,
+                text: localOk
+                  ? "Engine started successfully."
+                  : `Engine start partial — config: ${res.local_config?.error || "ok"}, poll: ${res.local_poll?.error || "ok"}`,
+              });
+            } else {
+              const details = [];
+              if (res?.local_config?.error)
+                details.push(`Config: ${res.local_config.error}`);
+              if (res?.local_poll?.error)
+                details.push(`Poll: ${res.local_poll.error}`);
+              if (res?.error) details.push(`Docker: ${res.error}`);
+              setMsg({
+                ok: false,
+                text: details.length
+                  ? details.join(" | ")
+                  : "Engine start failed — check logs for details.",
+              });
+            }
           } catch (e) {
             setMsg({ ok: false, text: e.message });
           } finally {
@@ -5267,12 +7378,12 @@
                   "div",
                   { className: "flex items-center gap-2" },
                   h(StatusDot, {
-                    status: engHealth?.ok ? "online" : "offline",
+                    status: engineOnline ? "online" : "offline",
                   }),
                   h(
                     "span",
                     { className: "text-sm font-medium" },
-                    engHealth?.ok ? "Engine online" : "Engine offline",
+                    engineOnline ? "Engine online" : "Engine offline",
                   ),
                 ),
                 isRunning &&
@@ -5286,11 +7397,15 @@
                       "Polling active",
                     ),
                   ),
-                engStatus &&
+                engineOnline &&
+                  !isRunning &&
                   h(
                     "div",
-                    { className: "text-xs text-muted" },
-                    `${engStatus.total_decisions || 0} verdicts  ·  last: ${engStatus.last_device_id || "—"}`,
+                    {
+                      className:
+                        "flex items-center gap-2 text-xs text-amber-600",
+                    },
+                    "Engine ready — poll not started",
                   ),
               ),
               h(
@@ -5533,58 +7648,90 @@
                     "div",
                     { className: "space-y-0.5 font-mono text-xs" },
                     logs.map((l) =>
-                      h(
-                        "div",
-                        {
-                          key: l.id,
-                          className: `flex gap-3 px-3 py-1.5 rounded items-start ${LEVEL_BG[l.level] || "hover:bg-surface-dim"}`,
-                        },
-                        h(
-                          "span",
-                          {
-                            className: "text-muted whitespace-nowrap shrink-0",
-                          },
-                          new Date(l.timestamp).toLocaleTimeString(),
-                        ),
-                        h(
-                          "span",
-                          {
-                            className: `w-14 shrink-0 font-bold ${LEVEL_STYLE[l.level] || "text-gray-400"}`,
-                          },
-                          (l.level || "info").toUpperCase(),
-                        ),
-                        h(
-                          "span",
-                          { className: "text-gray-600 shrink-0 w-20 truncate" },
-                          l.source || "",
-                        ),
-                        l.tag_id &&
-                          h(
-                            "span",
+                      l.source === "system"
+                        ? h(
+                            "div",
                             {
-                              className: "text-indigo-700 shrink-0 font-medium",
-                            },
-                            l.tag_id,
-                          ),
-                        h(
-                          "span",
-                          { className: "text-gray-800 flex-1 break-all" },
-                          l.message,
-                        ),
-                        !l.acknowledged &&
-                          h(
-                            "button",
-                            {
+                              key: l.id,
                               className:
-                                "shrink-0 text-muted hover:text-ink text-xs border border-border rounded px-1.5 py-0.5",
-                              onClick: () =>
-                                platform
-                                  .ackEngineLog(l.id, "admin")
-                                  .catch(() => {}),
+                                "flex items-center gap-2 py-2 px-3 select-none",
                             },
-                            "ack",
+                            h("div", {
+                              className:
+                                "flex-1 border-t border-dashed border-gray-300",
+                            }),
+                            h(
+                              "span",
+                              {
+                                className:
+                                  "text-[11px] text-gray-400 whitespace-nowrap font-sans px-2",
+                              },
+                              new Date(l.timestamp).toLocaleTimeString() +
+                                " \u00B7 " +
+                                l.message,
+                            ),
+                            h("div", {
+                              className:
+                                "flex-1 border-t border-dashed border-gray-300",
+                            }),
+                          )
+                        : h(
+                            "div",
+                            {
+                              key: l.id,
+                              className: `flex gap-3 px-3 py-1.5 rounded items-start ${LEVEL_BG[l.level] || "hover:bg-surface-dim"}`,
+                            },
+                            h(
+                              "span",
+                              {
+                                className:
+                                  "text-muted whitespace-nowrap shrink-0",
+                              },
+                              new Date(l.timestamp).toLocaleTimeString(),
+                            ),
+                            h(
+                              "span",
+                              {
+                                className: `w-14 shrink-0 font-bold ${LEVEL_STYLE[l.level] || "text-gray-400"}`,
+                              },
+                              (l.level || "info").toUpperCase(),
+                            ),
+                            h(
+                              "span",
+                              {
+                                className:
+                                  "text-gray-600 shrink-0 w-20 truncate",
+                              },
+                              l.source || "",
+                            ),
+                            l.tag_id &&
+                              h(
+                                "span",
+                                {
+                                  className:
+                                    "text-indigo-700 shrink-0 font-medium",
+                                },
+                                l.tag_id,
+                              ),
+                            h(
+                              "span",
+                              { className: "text-gray-800 flex-1 break-all" },
+                              l.message,
+                            ),
+                            !l.acknowledged &&
+                              h(
+                                "button",
+                                {
+                                  className:
+                                    "shrink-0 text-muted hover:text-ink text-xs border border-border rounded px-1.5 py-0.5",
+                                  onClick: () =>
+                                    platform
+                                      .ackEngineLog(l.id, "admin")
+                                      .catch(() => {}),
+                                },
+                                "ack",
+                              ),
                           ),
-                      ),
                     ),
                   ),
                 ),
@@ -5744,62 +7891,90 @@
                       "div",
                       { className: "space-y-0.5 font-mono text-xs" },
                       logs.map((l) =>
-                        h(
-                          "div",
-                          {
-                            key: l.id,
-                            className: `flex gap-3 px-3 py-1.5 rounded items-start ${LEVEL_BG[l.level] || "hover:bg-surface-dim"}`,
-                          },
-                          h(
-                            "span",
-                            {
-                              className:
-                                "text-muted whitespace-nowrap shrink-0",
-                            },
-                            new Date(l.timestamp).toLocaleTimeString(),
-                          ),
-                          h(
-                            "span",
-                            {
-                              className: `w-16 shrink-0 ${LEVEL_STYLE[l.level] || "text-gray-400"}`,
-                            },
-                            (l.level || "").toUpperCase(),
-                          ),
-                          h(
-                            "span",
-                            {
-                              className: "text-gray-600 shrink-0 w-24 truncate",
-                            },
-                            l.source || "",
-                          ),
-                          l.tag_id &&
-                            h(
-                              "span",
+                        l.source === "system"
+                          ? h(
+                              "div",
                               {
+                                key: l.id,
                                 className:
-                                  "text-indigo-700 shrink-0 font-medium mr-1",
+                                  "flex items-center gap-2 py-2 px-3 select-none",
                               },
-                              l.tag_id,
-                            ),
-                          h(
-                            "span",
-                            { className: "text-gray-800 flex-1 break-all" },
-                            l.message,
-                          ),
-                          !l.acknowledged &&
-                            h(
-                              "button",
+                              h("div", {
+                                className:
+                                  "flex-1 border-t border-dashed border-gray-300",
+                              }),
+                              h(
+                                "span",
+                                {
+                                  className:
+                                    "text-[11px] text-gray-400 whitespace-nowrap font-sans px-2",
+                                },
+                                new Date(l.timestamp).toLocaleTimeString() +
+                                  " \u00B7 " +
+                                  l.message,
+                              ),
+                              h("div", {
+                                className:
+                                  "flex-1 border-t border-dashed border-gray-300",
+                              }),
+                            )
+                          : h(
+                              "div",
                               {
-                                className:
-                                  "shrink-0 ml-2 text-xs text-muted border border-border rounded px-1.5 py-0.5 hover:text-ink",
-                                onClick: () =>
-                                  platform
-                                    .ackEngineLog(l.id, "admin")
-                                    .catch(() => {}),
+                                key: l.id,
+                                className: `flex gap-3 px-3 py-1.5 rounded items-start ${LEVEL_BG[l.level] || "hover:bg-surface-dim"}`,
                               },
-                              "ack",
+                              h(
+                                "span",
+                                {
+                                  className:
+                                    "text-muted whitespace-nowrap shrink-0",
+                                },
+                                new Date(l.timestamp).toLocaleTimeString(),
+                              ),
+                              h(
+                                "span",
+                                {
+                                  className: `w-16 shrink-0 ${LEVEL_STYLE[l.level] || "text-gray-400"}`,
+                                },
+                                (l.level || "").toUpperCase(),
+                              ),
+                              h(
+                                "span",
+                                {
+                                  className:
+                                    "text-gray-600 shrink-0 w-24 truncate",
+                                },
+                                l.source || "",
+                              ),
+                              l.tag_id &&
+                                h(
+                                  "span",
+                                  {
+                                    className:
+                                      "text-indigo-700 shrink-0 font-medium mr-1",
+                                  },
+                                  l.tag_id,
+                                ),
+                              h(
+                                "span",
+                                { className: "text-gray-800 flex-1 break-all" },
+                                l.message,
+                              ),
+                              !l.acknowledged &&
+                                h(
+                                  "button",
+                                  {
+                                    className:
+                                      "shrink-0 ml-2 text-xs text-muted border border-border rounded px-1.5 py-0.5 hover:text-ink",
+                                    onClick: () =>
+                                      platform
+                                        .ackEngineLog(l.id, "admin")
+                                        .catch(() => {}),
+                                  },
+                                  "ack",
+                                ),
                             ),
-                        ),
                       ),
                     ),
                   ),
@@ -6058,13 +8233,16 @@
 
       function EngineLogsTable() {
         const [levelFilter, setLevelFilter] = useState("");
+        const [sourceFilter, setSourceFilter] = useState("");
         const { data, error, reload } = usePolling(
           () =>
             platform.listEngineLogs({
               limit: 200,
               level: levelFilter || undefined,
+              source: sourceFilter || undefined,
             }),
           5000,
+          [levelFilter, sourceFilter],
         );
         if (error)
           return h(ErrorBanner, {
@@ -6098,6 +8276,19 @@
               h(
                 "select",
                 {
+                  value: sourceFilter,
+                  onChange: (e) => setSourceFilter(e.target.value),
+                  className:
+                    "text-xs border border-border rounded px-2 py-1 bg-surface",
+                },
+                h("option", { value: "" }, "All sources"),
+                ["system", "survey", "poll", "client"].map((s) =>
+                  h("option", { key: s, value: s }, s),
+                ),
+              ),
+              h(
+                "select",
+                {
                   value: levelFilter,
                   onChange: (e) => setLevelFilter(e.target.value),
                   className:
@@ -6128,7 +8319,7 @@
                 icon: "\uD83D\uDCCB",
                 title: "No engine log entries",
                 description:
-                  "Logs are generated by the connectivity poller and scope checker",
+                  "Logs are generated by the connectivity poller, scope checker, and survey monitor",
               })
             : h(
                 "div",
@@ -6137,55 +8328,88 @@
                   "div",
                   { className: "space-y-0.5 font-mono text-xs" },
                   items.map((l) =>
-                    h(
-                      "div",
-                      {
-                        key: l.id,
-                        className: `flex gap-3 px-3 py-1.5 rounded items-start ${LEVEL_BG[l.level] || "hover:bg-surface-dim"}`,
-                      },
-                      h(
-                        "span",
-                        { className: "text-muted whitespace-nowrap shrink-0" },
-                        new Date(l.timestamp).toLocaleTimeString(),
-                      ),
-                      h(
-                        "span",
-                        {
-                          className: `w-16 shrink-0 ${LEVEL_STYLE[l.level] || "text-gray-400"}`,
-                        },
-                        (l.level || "").toUpperCase(),
-                      ),
-                      h(
-                        "span",
-                        { className: "text-gray-500 w-20 shrink-0 truncate" },
-                        l.source || "",
-                      ),
-                      l.tag_id &&
-                        h(
-                          "span",
-                          { className: "text-indigo-600 shrink-0 mr-1" },
-                          l.tag_id,
-                        ),
-                      h(
-                        "span",
-                        { className: "text-gray-800 flex-1 break-all" },
-                        l.message,
-                      ),
-                      !l.acknowledged &&
-                        h(
-                          "button",
+                    l.source === "system"
+                      ? h(
+                          "div",
                           {
+                            key: l.id,
                             className:
-                              "shrink-0 ml-2 text-xs text-muted border border-border rounded px-1.5 py-0.5 hover:text-ink",
-                            onClick: () =>
-                              platform
-                                .ackEngineLog(l.id, "admin")
-                                .then(reload)
-                                .catch(() => {}),
+                              "flex items-center gap-2 py-2 px-3 select-none",
                           },
-                          "ack",
+                          h("div", {
+                            className:
+                              "flex-1 border-t border-dashed border-gray-300",
+                          }),
+                          h(
+                            "span",
+                            {
+                              className:
+                                "text-xs text-muted italic whitespace-nowrap px-2",
+                            },
+                            l.message,
+                          ),
+                          h("div", {
+                            className:
+                              "flex-1 border-t border-dashed border-gray-300",
+                          }),
+                        )
+                      : h(
+                          "div",
+                          {
+                            key: l.id,
+                            className: `flex gap-3 px-3 py-1.5 rounded items-start ${LEVEL_BG[l.level] || "hover:bg-surface-dim"}`,
+                          },
+                          h(
+                            "span",
+                            {
+                              className:
+                                "text-muted whitespace-nowrap shrink-0",
+                            },
+                            new Date(l.timestamp).toLocaleTimeString(),
+                          ),
+                          h(
+                            "span",
+                            {
+                              className: `w-16 shrink-0 ${LEVEL_STYLE[l.level] || "text-gray-400"}`,
+                            },
+                            (l.level || "").toUpperCase(),
+                          ),
+                          h(
+                            "span",
+                            {
+                              className: "text-gray-600 shrink-0 w-24 truncate",
+                            },
+                            l.source || "",
+                          ),
+                          l.tag_id &&
+                            h(
+                              "span",
+                              {
+                                className:
+                                  "text-indigo-700 shrink-0 font-medium mr-1",
+                              },
+                              l.tag_id,
+                            ),
+                          h(
+                            "span",
+                            { className: "text-gray-800 flex-1 break-all" },
+                            l.message,
+                          ),
+                          !l.acknowledged &&
+                            h(
+                              "button",
+                              {
+                                className:
+                                  "shrink-0 ml-2 text-xs text-muted border border-border rounded px-1.5 py-0.5 hover:text-ink",
+                                onClick: () =>
+                                  platform
+                                    .ackEngineLog(l.id, "admin")
+                                    .then(reload)
+                                    .catch(() => {}),
+                              },
+                              "ack",
+                            ),
                         ),
-                    ),
                   ),
                 ),
               ),
@@ -6206,15 +8430,16 @@
         return h(
           Layout,
           { page, setPage, engineHealth },
-          page === "wizard" && h(SetupWizard),
+          page === "wizard"   && h(SetupWizard),
           page === "localize" && h(LocalizationPage),
-          page === "map" && h(MapView),
-          page === "devices" && h(DeviceTables),
-          page === "logs" && h(LogsPage),
+          page === "survey"   && h(SurveyPage),
+          page === "map"      && h(MapView),
+          page === "devices"  && h(DeviceTables),
+          page === "logs"     && h(LogsPage),
         );
       }
 
-      // ─── MOUNT ───────────────────────────────────────────────────────────
+      // ─── MOUNT ────────────────────────────────────────────────────────────
       createRoot(document.getElementById("root")).render(h(App));
     </script>
   </body>

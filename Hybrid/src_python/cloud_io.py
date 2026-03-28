@@ -105,43 +105,101 @@ def push_to_s3(
 # CSV logging
 # ---------------------------------------------------------------------------
 
-_CSV_HEADERS = [
+# Full header set (trilateration / BLE / ToF — all have x,y coordinates)
+_CSV_HEADERS_FULL: List[str] = [
     "_id", "device_id", "campus_id", "building_id", "floor_id", "room_id",
     "timestamp", "confidence", "rssi_vector", "x", "y", "scan_number",
 ]
 
+# Fingerprinting produces room-level labels only — no x,y coordinates
+_CSV_HEADERS_FINGER: List[str] = [
+    "_id", "device_id", "campus_id", "building_id", "floor_id", "room_id",
+    "timestamp", "confidence", "rssi_vector", "scan_number",
+]
+
+# Keep the old name as an alias so any external code keeps working
+_CSV_HEADERS = _CSV_HEADERS_FULL
+
+# Map method short-key → (config key for path, headers list)
+_METHOD_CSV_CONFIG: Dict[str, tuple] = {
+    "rssi": ("csv_trilat_log_path",  _CSV_HEADERS_FULL),    # trilateration
+    "fp":   ("csv_finger_log_path",  _CSV_HEADERS_FINGER),  # fingerprinting
+    "ble":  ("csv_ble_log_path",     _CSV_HEADERS_FULL),    # BLE (original headers)
+    "tof":  ("csv_tof_log_path",     _CSV_HEADERS_FULL),    # Time-of-Flight
+}
+
+_DEFAULT_CSV_PATHS: Dict[str, str] = {
+    "rssi": "trilat_log.csv",
+    "fp":   "finger_log.csv",
+    "ble":  "ble_log.csv",
+    "tof":  "tof_log.csv",
+}
+
+
+def _build_row(payload: Dict[str, Any], headers: List[str]) -> list:
+    """Serialise a decision payload to a CSV row matching the given header list."""
+    row = []
+    for h in headers:
+        if h == "confidence":
+            row.append(f"{payload.get('confidence', 0.0):.4f}")
+        elif h == "rssi_vector":
+            row.append(json.dumps(payload.get("rssi_vector", {})))
+        elif h == "x":
+            row.append(f"{payload.get('x', 0.0):.4f}")
+        elif h == "y":
+            row.append(f"{payload.get('y', 0.0):.4f}")
+        else:
+            row.append(payload.get(h, ""))
+    return row
+
+
+def log_to_csv_method(
+    payload:    Dict[str, Any],
+    method_key: str,
+    cloud_cfg:  Dict[str, Any],
+) -> bool:
+    """
+    Append one localization decision to the correct per-method CSV log.
+
+    Parameters
+    ----------
+    payload     : decision dict from _store_decision()
+    method_key  : "rssi_decisions" | "fp_decisions" | "ble_decisions" | "tof_decisions"
+    cloud_cfg   : the ``cloud`` section of config.yaml
+
+    Files are created with the correct headers on first write.
+    """
+    # Strip "_decisions" suffix → "rssi" | "fp" | "ble" | "tof"
+    method = method_key.replace("_decisions", "")
+    cfg_key, headers = _METHOD_CSV_CONFIG.get(method, ("csv_trilat_log_path", _CSV_HEADERS_FULL))
+    path = cloud_cfg.get(cfg_key, _DEFAULT_CSV_PATHS.get(method, "telemetry_log.csv"))
+    return _write_csv_row(payload, path, headers)
+
 
 def log_to_csv(payload: Dict[str, Any], csv_path: str = "telemetry_log.csv") -> bool:
     """
-    Append one localization decision row to the CSV log.
-
-    Creates the file with headers if it does not already exist.
-    Thread-safe for single-writer use (the orchestrator calls this
-    from a single asyncio task).
+    Legacy single-file CSV writer — kept for backward compatibility.
+    New code should use log_to_csv_method() instead.
     """
+    return _write_csv_row(payload, csv_path, _CSV_HEADERS_FULL)
+
+
+def _write_csv_row(
+    payload: Dict[str, Any],
+    csv_path: str,
+    headers: List[str],
+) -> bool:
+    """Core CSV append — creates file with headers if it does not exist."""
     try:
         file_exists = os.path.isfile(csv_path)
         with open(csv_path, mode="a", newline="", encoding="utf-8") as fh:
             writer = csv.writer(fh)
             if not file_exists:
-                writer.writerow(_CSV_HEADERS)
-            writer.writerow([
-                payload.get("_id",         ""),
-                payload.get("device_id",   ""),
-                payload.get("campus_id",   ""),
-                payload.get("building_id", ""),
-                payload.get("floor_id",    ""),
-                payload.get("room_id",     ""),
-                payload.get("timestamp",   ""),
-                f"{payload.get('confidence', 0.0):.4f}",
-                json.dumps(payload.get("rssi_vector", {})),
-                f"{payload.get('x', 0.0):.4f}",
-                f"{payload.get('y', 0.0):.4f}",
-                payload.get("scan_number", 0),
-            ])
+                writer.writerow(headers)
+            writer.writerow(_build_row(payload, headers))
         return True
     except Exception as exc:
-        log.error("cloud_io: CSV write failed: %s", exc)
+        log.error("cloud_io: CSV write failed (%s): %s", csv_path, exc)
         return False
 
 

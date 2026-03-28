@@ -170,10 +170,14 @@ def generate_config(
             "keepalive_s":  60,
         },
         "cloud": {
-            "s3_key_template":  "{campus}_{building}_{floor}_latest.json",
-            "s3_cache_control": "max-age=2",
-            "radiomap_path":    "radiomap_{campus}_{building}_{floor}.json",
-            "csv_log_path":     "telemetry_log.csv",
+            "s3_key_template":    "{campus}_{building}_{floor}_latest.json",
+            "s3_cache_control":   "max-age=2",
+            "radiomap_path":      "radiomap_{campus}_{building}_{floor}.json",
+            # Per-method CSV logs — different header sets per method
+            "csv_trilat_log_path": "trilat_log.csv",
+            "csv_finger_log_path": "finger_log.csv",
+            "csv_ble_log_path":    "ble_log.csv",
+            "csv_tof_log_path":    "tof_log.csv",
         },
     }
 

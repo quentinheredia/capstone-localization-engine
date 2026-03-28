@@ -68,6 +68,7 @@ def _find_python():
 
 
 def _wait_for_server(port: int, proc: subprocess.Popen = None, timeout: int = 30) -> tuple:
+    print(f"[DESKTOP_APP.PY] Waiting for server on port {port}...")
     """
     Poll /health until it responds or timeout elapses.
     Returns (success: bool, error_detail: str).
@@ -90,6 +91,7 @@ def _wait_for_server(port: int, proc: subprocess.Popen = None, timeout: int = 30
             if r.ok:
                 return True, ""
         except Exception:
+            print(f"[DESKTOP_APP.PY] Server not responding yet on port {port}…")
             pass
         time.sleep(1)
 
@@ -254,28 +256,39 @@ class JsApi:
     """
     def __init__(self):
         print("[JsApi] Initialized")
-        self._popout_windows = {}
+        self._popout_windows: dict = {}   # method -> webview.Window (or None)
+
+    def _on_window_closed(self, method: str):
+        """Called when the user closes a pop-out window — removes the stale reference."""
+        print(f"[JsApi] Pop-out closed by user: {method}")
+        self._popout_windows.pop(method, None)
 
     def open_map_window(self, method: str):
-        print("Creating window for method:", method)
-        """Open (or focus) a native window for the given localization method."""
-        if method in self._popout_windows:
-            print("Window already exists for method, trying to focus:", method)
-            try:
-                # If window still exists, bring to front
-                #w = self._popout_windows[method]
-                #w.on_top = True
-                #w.on_top = False
-                w.destroy()  # Temporary workaround to reliably bring to front on Windows
-                self.open_map_window(method)  # Recreate immediately after destroy
-                print(f"Focused window for {method}")
-                return {"ok": True, "action": "focused"}
-            except Exception as e:
-                print (f"Error focusing window for {method}, recreating:", e)
-                pass  # Window was closed, recreate
+        """
+        Open a native OS window for the given localization method.
+        If the window is already alive, bring it to the front.
+        If the user previously closed it, create a fresh one.
+        """
+        print(f"[JsApi] open_map_window called for: {method}")
 
+        # ── Check whether an existing window is still alive ───────────────
+        existing = self._popout_windows.get(method)
+        if existing is not None:
+            # Verify the window is still in pywebview's active list
+            alive = existing in webview.windows
+            if alive:
+                try:
+                    existing.on_top = True
+                    existing.on_top = False
+                    print(f"[JsApi] Focused existing window: {method}")
+                    return {"ok": True, "action": "focused"}
+                except Exception as e:
+                    print(f"[JsApi] Focus failed ({e}), recreating window: {method}")
+            # Window was closed — clean up the stale reference
+            self._popout_windows.pop(method, None)
+
+        # ── Create a new native window ────────────────────────────────────
         html = _map_window_html(method, HYBRID_PORT)
-        print("HTML Window created for method:", method, "On port:", HYBRID_PORT)
         labels = {
             "trilateration": "Trilateration",
             "fingerprinting": "Fingerprinting",
@@ -290,22 +303,23 @@ class JsApi:
             height   = 600,
             min_size = (400, 300),
         )
+
+        # Register closed-event so stale reference is auto-removed
+        w.events.closed += lambda: self._on_window_closed(method)
+
         self._popout_windows[method] = w
-        print("Window created for method:", method)
+        print(f"[JsApi] New window created: {method}")
         return {"ok": True, "action": "opened"}
 
     def close_map_window(self, method: str):
-        print("Closing window for method:", method)
-        """Close a pop-out map window."""
+        """Programmatically close a pop-out map window."""
+        print(f"[JsApi] close_map_window called for: {method}")
         w = self._popout_windows.pop(method, None)
         if w:
             try:
-                print("trying to destroy window for method:", method)
                 w.destroy()
             except Exception as e:
-                print("Error closing window for method:", method, "Error:", e)
-                pass
-        print("Window closed for method:", method)
+                print(f"[JsApi] Error destroying window {method}: {e}")
         return {"ok": True}
 
 
@@ -321,13 +335,94 @@ class App:
 
     # ── Server lifecycle ──────────────────────────────────────────────────
 
+    @staticmethod
+    def _start_pipe_drainer(proc: subprocess.Popen, label: str) -> None:
+        """
+        Spawn two daemon threads that continuously drain a subprocess's stdout
+        and stderr pipes.
+
+        Without draining, the OS pipe buffer (4–64 KB on Windows) fills up once
+        the process has emitted that much output.  After it fills, every call to
+        write() on the subprocess's end of the pipe blocks until the reader
+        consumes data — which never happens unless we drain it here.  That
+        blocking write() happens to be a log.warning() call on the asyncio event
+        loop thread, so a full pipe silently freezes the HTTP server.
+
+        Daemon threads are used so they die automatically when the desktop app
+        exits.  Output is forwarded to the desktop app's own stdout so the
+        operator can still read it.
+        """
+        def _drain(stream, prefix: str):
+            try:
+                for raw in stream:
+                    try:
+                        line = raw.decode(errors="replace").rstrip()
+                        if line:
+                            print(f"[{prefix}] {line}", flush=True)
+                    except Exception:
+                        pass
+            except Exception:
+                pass   # process exited — pipe closed
+
+        for stream, kind in [(proc.stdout, f"{label}/out"), (proc.stderr, f"{label}/err")]:
+            if stream is None:
+                continue
+            t = threading.Thread(target=_drain, args=(stream, kind), daemon=True)
+            t.start()
+
     def _server_healthy(self, port: int) -> bool:
         """Return True if a server is already responding on this port."""
+        print("[DESKTOP_APP.PY] Checking for existing server on port %d…" % port)
         try:
             r = requests.get(f"http://127.0.0.1:{port}/health", timeout=2)
             return r.ok
         except Exception:
+            print(f"[DESKTOP_APP.PY] No server responding on port {port}.")
             return False
+
+    @staticmethod
+    def _kill_port(port: int) -> None:
+        """
+        Terminate any process currently bound to *port*.
+
+        Called before launching a fresh server so that stale processes from
+        previous (possibly crashed) sessions do not prevent the new one from
+        binding or cause the startup check to incorrectly reuse old code.
+        """
+        try:
+            if sys.platform == "win32":
+                # netstat -ano lists pid in the last column; taskkill ends it.
+                out = subprocess.check_output(
+                    f'netstat -ano | findstr ":{port} "',
+                    shell=True, stderr=subprocess.DEVNULL,
+                ).decode(errors="replace")
+                pids = set()
+                for line in out.splitlines():
+                    parts = line.strip().split()
+                    if parts and parts[-1].isdigit():
+                        pids.add(parts[-1])
+                for pid in pids:
+                    subprocess.run(
+                        ["taskkill", "/F", "/PID", pid],
+                        capture_output=True,
+                    )
+            else:
+                # macOS / Linux: lsof gives us the pids directly.
+                out = subprocess.check_output(
+                    ["lsof", "-ti", f":{port}"],
+                    stderr=subprocess.DEVNULL,
+                ).decode(errors="replace").strip()
+                if out:
+                    for pid in out.split("\n"):
+                        pid = pid.strip()
+                        if pid.isdigit():
+                            subprocess.run(
+                                ["kill", "-9", pid],
+                                capture_output=True,
+                            )
+            time.sleep(0.4)   # give the OS a moment to free the port
+        except Exception:
+            pass  # port was not in use — nothing to do
 
     def _start_servers(self):
         python = _find_python()
@@ -336,32 +431,54 @@ class App:
         platform_script = str(REPO_ROOT / "platform" / "backend" / "main.py")
         hybrid_script   = str(REPO_ROOT / "Hybrid" / "src_python" / "app.py")
 
-        # Only start if not already running (user may have started them manually)
-        if self._server_healthy(PLATFORM_PORT):
-            print(f"[App] Platform Backend already running on port {PLATFORM_PORT} — skipping launch.")
-        else:
-            print(f"[App] Starting Platform Backend  ({platform_script})")
-            self._platform_proc = subprocess.Popen(
-                [python, platform_script],
-                cwd=str(REPO_ROOT),
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
+        # Kill any stale process on each port before starting fresh.
+        # This ensures updated code is always loaded even after a crash or
+        # forced close that left an orphaned server process behind.
+        print(f"[App] Clearing port {PLATFORM_PORT} (any stale process)…")
+        self._kill_port(PLATFORM_PORT)
+        print(f"[App] Starting Platform Backend  ({platform_script})")
+        self._platform_proc = subprocess.Popen(
+            [python, platform_script],
+            cwd=str(REPO_ROOT),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        # Drain stdout/stderr of both subprocesses in background daemon threads.
+        # Without this the OS pipe buffers fill up (~4-64 KB), causing every
+        # subsequent log.warning() call in the backend to block the event loop
+        # indefinitely — which prevents uvicorn from responding to HTTP health
+        # checks and produces the periodic "Frontend reconnected for 7s" errors.
+        self._start_pipe_drainer(self._platform_proc, "platform")
 
-        if self._server_healthy(HYBRID_PORT):
-            print(f"[App] Hybrid Engine already running on port {HYBRID_PORT} — skipping launch.")
-        else:
-            print(f"[App] Starting Hybrid Engine  ({hybrid_script})")
-            self._hybrid_proc = subprocess.Popen(
-                [python, hybrid_script],
-                cwd=str(REPO_ROOT),
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
+        print(f"[App] Clearing port {HYBRID_PORT} (any stale process)…")
+        self._kill_port(HYBRID_PORT)
+        print(f"[App] Starting Hybrid Engine  ({hybrid_script})")
+        self._hybrid_proc = subprocess.Popen(
+            [python, hybrid_script],
+            cwd=str(REPO_ROOT),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self._start_pipe_drainer(self._hybrid_proc, "engine")
 
     def _stop_servers(self):
+        # Always stop the engine poll first — this covers BOTH processes we
+        # started this session AND any stale engine process that was reused
+        # (where self._hybrid_proc is None).  Without this call the poll loop
+        # keeps making Telnet connections to the APs between sessions, filling
+        # the log DB with connectivity-failure alerts the user will see on the
+        # next open.
+        try:
+            requests.post(
+                f"http://127.0.0.1:{HYBRID_PORT}/poll/stop",
+                timeout=3,
+            )
+            print("[App] Engine poll stopped on shutdown.")
+        except Exception as exc:
+            print(f"[App] Could not stop engine poll on shutdown (ok if never started): {exc}")
+
         for proc, name in [
             (self._platform_proc, "Platform Backend"),
             (self._hybrid_proc,   "Hybrid Engine"),
@@ -424,6 +541,33 @@ class App:
                     f"Server output:\n{detail}"
                 )
                 return
+
+            # ── Ensure the engine poll is in a clean stopped state ────────
+            # If a stale engine process from a previous session was reused
+            # (because _server_healthy() returned True and we skipped launching
+            # a new subprocess), it may still have poll_running=True and active
+            # Telnet sessions open to the APs.  Always stop the poll here so
+            # the user starts from a known clean state.
+            try:
+                requests.post(
+                    f"http://127.0.0.1:{HYBRID_PORT}/poll/stop",
+                    timeout=3,
+                )
+                print("[App] Engine poll stopped — clean startup state.")
+            except Exception as exc:
+                print(f"[App] Could not stop engine poll (may be normal): {exc}")
+
+            # Write a "session started" sentinel to the engine log so the
+            # user can see exactly where the current session begins — any
+            # connectivity failures above this entry are from a previous run.
+            try:
+                requests.post(
+                    f"http://127.0.0.1:{PLATFORM_PORT}/api/v1/engine-logs/session-start",
+                    timeout=3,
+                )
+                print("[App] Session-start marker written to engine log.")
+            except Exception as exc:
+                print(f"[App] Could not write session-start marker: {exc}")
 
             print("[App] Both servers ready — loading frontend.")
             if self._window:
@@ -509,20 +653,12 @@ class App:
         t = threading.Thread(target=self._startup_thread, daemon=True)
         t.start()
 
-        # Hand control to pywebview (blocks until window is closed)
-        webview.start(
-            func        = None,
-            debug       = False,
-            http_server = False,
-        )
-
-        # Cleanup after window closes
-        self._on_closed()
-
-
-def main():
-    App().run()
+        # Hand control to pywebview — blocks this thread until the window closes.
+        # Events are wired here (not in __init__) so self._window is always set.
+        self._window.events.loaded  += self._on_loaded
+        self._window.events.closed  += self._on_closed
+        webview.start(debug=False)
 
 
 if __name__ == "__main__":
-    main()
+    App().run()

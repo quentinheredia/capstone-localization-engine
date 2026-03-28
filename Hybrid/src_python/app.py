@@ -270,10 +270,10 @@ def _store_decision(d: LocalizationDecision, method_key: str) -> None:
                 f"[{method_key.replace('_decisions','')}] {d.device_id} -> {d.room_id} ({d.confidence:.2f})")
 
     cfg = _state.get("cfg") or {}
-    cloud_cfg    = cfg.get("cloud", {})
-    csv_path     = cloud_cfg.get("csv_log_path", "telemetry_log.csv")
-    s3_template  = cloud_cfg.get("s3_key_template", "{campus}_{building}_{floor}_latest.json")
-    cloud_io.log_to_csv(payload, csv_path)
+    cloud_cfg   = cfg.get("cloud", {})
+    s3_template = cloud_cfg.get("s3_key_template", "{campus}_{building}_{floor}_latest.json")
+    # Route to the per-method CSV (trilat_log / finger_log / ble_log / tof_log)
+    cloud_io.log_to_csv_method(payload, method_key, cloud_cfg)
     cloud_io.push_to_s3(payload, key_template=s3_template)
 
 
@@ -725,11 +725,193 @@ def get_map(method: str = Query("trilateration", description="trilateration | fi
 
 # ── Survey / fingerprint calibration ──────────────────────────────────────────
 
+# Survey session state  (one survey at a time)
+_survey_state: Dict[str, Any] = {
+    "running":           False,
+    "room_label":        None,
+    "target_ssid":       None,
+    "total_samples":     0,
+    "collected_samples": 0,
+    "status":            "idle",   # idle | running | done | cancelled | error
+    "error":             None,
+}
+_survey_task: Optional[asyncio.Task] = None
+
+
+@app.post("/survey/start")
+async def survey_start(
+    room_label:  str,
+    target_ssid: Optional[str] = None,
+    samples:     int = Query(10, ge=1, le=60),
+):
+    """
+    Begin a background site survey — collects `samples` RSSI vectors
+    for `room_label` and saves each to the radiomap as it arrives.
+
+    Requires:
+      • Engine poll loop is NOT running (stop localization first).
+      • Config has been loaded (POST /config/reload) so APs are known.
+    """
+    global _survey_task
+    if _state["poll_running"]:
+        raise HTTPException(
+            409,
+            "Cannot survey while localization is running — POST /poll/stop first",
+        )
+    if _survey_state["running"]:
+        raise HTTPException(409, "A survey is already in progress")
+
+    cfg = _state.get("cfg")
+    if cfg is None:
+        cfg = _load_cfg_from_disk()
+        if cfg:
+            _apply_cfg(cfg)
+    env: Optional[FloorEnvironment] = _state.get("env")
+    if cfg is None or env is None:
+        raise HTTPException(503, "No config / location loaded — POST /config/reload first")
+
+    # Resolve target SSID (default to first configured target)
+    if not target_ssid:
+        targets = [t.ssid for t in env.targets]
+        if not targets:
+            raise HTTPException(
+                400,
+                "No target SSIDs in config — specify target_ssid= query parameter",
+            )
+        target_ssid = targets[0]
+
+    _survey_state.update({
+        "running":           True,
+        "room_label":        room_label,
+        "target_ssid":       target_ssid,
+        "total_samples":     samples,
+        "collected_samples": 0,
+        "status":            "running",
+        "error":             None,
+    })
+    _survey_task = asyncio.create_task(
+        _run_survey(room_label, target_ssid, samples),
+        name="survey_loop",
+    )
+    log.info("Survey started — room=%r  ssid=%r  n=%d", room_label, target_ssid, samples)
+    return {
+        "ok":            True,
+        "room_label":    room_label,
+        "target_ssid":   target_ssid,
+        "total_samples": samples,
+    }
+
+
+@app.get("/survey/status")
+def survey_status():
+    """Return the current survey progress."""
+    total = _survey_state["total_samples"] or 1
+    return {
+        **_survey_state,
+        "progress_pct": int(_survey_state["collected_samples"] / total * 100),
+    }
+
+
+@app.post("/survey/cancel")
+async def survey_cancel():
+    """Cancel a running survey."""
+    global _survey_task
+    if _survey_task and not _survey_task.done():
+        _survey_task.cancel()
+        try:
+            await _survey_task
+        except asyncio.CancelledError:
+            pass
+    _survey_state["running"] = False
+    _survey_state["status"]  = "cancelled"
+    return {"ok": True}
+
+
+@app.get("/survey/radiomap")
+def get_survey_radiomap():
+    """
+    Return a per-room summary of the current radiomap file:
+      { rooms: { <room>: { sample_count, ap_count } }, ... }
+    """
+    cfg = _state.get("cfg") or {}
+    env: Optional[FloorEnvironment] = _state.get("env")
+    if env is None:
+        raise HTTPException(503, "No location selected — POST /config/reload first")
+
+    rm_template   = cfg.get("cloud", {}).get("radiomap_path", "radiomap_{campus}_{building}_{floor}.json")
+    radiomap_path = cloud_io.resolve_radiomap_path(
+        rm_template, env.campus_id, env.building_id, env.floor_id
+    )
+
+    if not radiomap_path or not Path(radiomap_path).exists():
+        return {"rooms": {}, "path": radiomap_path, "exists": False, "total_rooms": 0}
+
+    try:
+        data = json.loads(Path(radiomap_path).read_text(encoding="utf-8"))
+        rooms_summary = {
+            room: {
+                "sample_count": len(vectors),
+                "ap_count":     len({k for vec in vectors for k in vec}),
+            }
+            for room, vectors in data.items()
+            if isinstance(vectors, list)
+        }
+        return {
+            "rooms":       rooms_summary,
+            "path":        radiomap_path,
+            "exists":      True,
+            "total_rooms": len(rooms_summary),
+        }
+    except Exception as exc:
+        raise HTTPException(500, f"Failed to read radiomap: {exc}")
+
+
+@app.delete("/survey/radiomap/{room_label}")
+def delete_survey_room(room_label: str):
+    """Remove one room's calibration vectors from the radiomap file."""
+    cfg = _state.get("cfg") or {}
+    env: Optional[FloorEnvironment] = _state.get("env")
+    if env is None:
+        raise HTTPException(503, "No location selected — POST /config/reload first")
+
+    rm_template   = cfg.get("cloud", {}).get("radiomap_path", "radiomap_{campus}_{building}_{floor}.json")
+    radiomap_path = cloud_io.resolve_radiomap_path(
+        rm_template, env.campus_id, env.building_id, env.floor_id
+    )
+
+    if not radiomap_path or not Path(radiomap_path).exists():
+        raise HTTPException(404, "Radiomap file not found")
+
+    try:
+        data = json.loads(Path(radiomap_path).read_text(encoding="utf-8"))
+        if room_label not in data:
+            raise HTTPException(404, f"Room '{room_label}' not found in radiomap")
+        del data[room_label]
+        Path(radiomap_path).write_text(json.dumps(data, indent=2), encoding="utf-8")
+        return {"ok": True, "deleted_room": room_label, "remaining_rooms": len(data)}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, f"Failed to update radiomap: {exc}")
+
+
+@app.get("/survey/targets")
+def survey_targets():
+    """Return the list of configured target SSIDs from the active config."""
+    env: Optional[FloorEnvironment] = _state.get("env")
+    if env is None:
+        return {"targets": []}
+    return {"targets": [t.ssid for t in env.targets]}
+
+
 @app.post("/survey/{room_label}")
 def post_survey(room_label: str, payload: Dict[str, Any]):
     """
-    Receive one RSSI fingerprint vector for a named room.
+    Receive one pre-computed RSSI fingerprint vector for a named room.
     Body: {"AP1": -45.0, "AP2": -55.0, ...}
+
+    This endpoint accepts a single externally computed vector.
+    To run a full automated survey, use POST /survey/start instead.
 
     The radiomap file is resolved to the active location so calibration
     data is always physically anchored:
@@ -744,6 +926,87 @@ def post_survey(room_label: str, payload: Dict[str, Any]):
     radiomap_path = cloud_io.resolve_radiomap_path(rm_template, env.campus_id, env.building_id, env.floor_id)
     cloud_io.save_radiomap(room_label, payload, radiomap_path)
     return {"ok": True, "room": room_label, "file": radiomap_path, "samples_added": 1}
+
+
+# ── Survey background loop ─────────────────────────────────────────────────────
+
+async def _run_survey(room_label: str, target_ssid: str, total_samples: int) -> None:
+    """
+    Background task: open a fresh TelnetPipe, collect `total_samples`
+    RSSI vectors for `target_ssid`, and write each one to the radiomap
+    as it arrives (so partial data is never lost on cancellation).
+    """
+    cfg  = _state.get("cfg") or {}
+    env: Optional[FloorEnvironment] = _state.get("env")
+
+    tc      = cfg.get("telemetry_config", {})
+    prompts = tc.get("prompts", {"main": "eap350>", "sub": "eap350/wless2/network>"})
+
+    rm_template   = cfg.get("cloud", {}).get("radiomap_path", "radiomap_{campus}_{building}_{floor}.json")
+    radiomap_path = cloud_io.resolve_radiomap_path(
+        rm_template, env.campus_id, env.building_id, env.floor_id
+    )
+
+    # A slightly slower interval gives APs time to refresh their apscan table
+    pipe = TelnetPipe(
+        aps             = list(env.wifi_aps.values()),
+        target_ssids    = [target_ssid],
+        prompts         = prompts,
+        poll_interval_s = 2.0,
+    )
+
+    try:
+        await pipe.connect()
+        log.info(
+            "[Survey] Collecting %d samples — room=%r  ssid=%r  radiomap=%s",
+            total_samples, room_label, target_ssid, radiomap_path,
+        )
+
+        async for rssi_map in pipe.stream():
+            # Build the per-AP vector for this target SSID
+            vector = {
+                ap_id: ap_data[target_ssid]
+                for ap_id, ap_data in rssi_map.items()
+                if target_ssid in ap_data
+            }
+
+            if vector:
+                # Run file I/O in a thread so it doesn't block the event loop
+                # (health checks must remain responsive during the survey)
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(
+                    None, cloud_io.save_radiomap, room_label, vector, radiomap_path,
+                )
+                _survey_state["collected_samples"] += 1
+                log.info(
+                    "[Survey #%d/%d] %r: %s",
+                    _survey_state["collected_samples"], total_samples,
+                    room_label, vector,
+                )
+
+            if _survey_state["collected_samples"] >= total_samples:
+                break
+
+        _survey_state["status"] = "done"
+        log.info(
+            "[Survey] Complete — %d vectors saved for %r",
+            _survey_state["collected_samples"], room_label,
+        )
+
+    except asyncio.CancelledError:
+        _survey_state["status"] = "cancelled"
+        log.info(
+            "[Survey] Cancelled at sample %d/%d",
+            _survey_state["collected_samples"], total_samples,
+        )
+        raise
+    except Exception as exc:
+        _survey_state["status"] = "error"
+        _survey_state["error"]  = str(exc)
+        log.error("[Survey] Error: %s", exc)
+    finally:
+        await pipe.close()
+        _survey_state["running"] = False
 
 
 # ---------------------------------------------------------------------------

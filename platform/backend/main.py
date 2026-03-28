@@ -82,6 +82,25 @@ def _write_system_log(level: str, message: str, meta: dict | None = None) -> Non
         log.warning("Failed to write system log: %s", exc)
 
 
+def _write_survey_log(level: str, message: str, meta: dict | None = None) -> None:
+    """Write a survey-level EngineLog entry (source='survey')."""
+    try:
+        db = SessionLocal()
+        try:
+            db.add(EngineLog(
+                level=level,
+                source="survey",
+                message=message,
+                meta=meta or {},
+                timestamp=datetime.now(timezone.utc),
+            ))
+            db.commit()
+        finally:
+            db.close()
+    except Exception as exc:
+        log.warning("Failed to write survey log: %s", exc)
+
+
 # ─── Migrations ──────────────────────────────────────────────────────────────
 
 def _migrate_columns(engine):
@@ -101,6 +120,7 @@ def _migrate_columns(engine):
         # Anchor table — device lifecycle
         ("anchors", "device_status",      "VARCHAR(50) DEFAULT 'in_stock'"),
         ("anchors", "flags",              "JSONB DEFAULT '[]'"),
+        ("anchors", "last_reached",       "TIMESTAMPTZ"),
         # Tag table — identity, priority, scope  (new in this release)
         ("tags",   "name",                "VARCHAR(255) DEFAULT ''"),
         ("tags",   "device_type",         "VARCHAR(100) DEFAULT ''"),
@@ -131,87 +151,311 @@ def _migrate_columns(engine):
                 pass  # Already nullable — safe to ignore
 
 
+import time as _time
+
+# ─── Asyncio Loop Watchdog ────────────────────────────────────────────────────
+
+async def _loop_watchdog() -> None:
+    """
+    Detects event-loop stalls.  Wakes every 0.1 s; if the actual sleep
+    exceeds THRESHOLD the loop was blocked — log the duration so we can
+    trace which background task is responsible.
+    """
+    THRESHOLD = 0.4   # seconds — anything longer than this is logged
+    INTERVAL  = 0.1   # probe frequency (seconds)
+
+    while True:
+        t0 = _time.monotonic()
+        await asyncio.sleep(INTERVAL)
+        blocked_for = _time.monotonic() - t0 - INTERVAL
+        if blocked_for >= THRESHOLD:
+            log.warning(
+                "[WATCHDOG] Event loop blocked for %.3f s  "
+                "(health checks will fail if this exceeds 3 s)",
+                blocked_for,
+            )
+
+
 # ─── Background Task: ICMP Connectivity Poller ───────────────────────────────
 
+import sys as _sys
+import subprocess as _subprocess
+
+# Warn once per process if asyncio subprocesses are unavailable (SelectorEventLoop).
+# We deliberately do NOT repeat this warning on every ping — with 10+ anchors
+# retrying every 6 s, repeating it floods the log and fills the stderr pipe when
+# the backend runs as a subprocess (desktop app), which in turn blocks the event
+# loop on every subsequent log.warning() call.
+_subprocess_warned: bool = False
+
+
+def _ping_cmd(ip: str) -> list[str]:
+    if _sys.platform == "win32":
+        return ["ping", "-n", "1", "-w", "1000", ip]
+    return ["ping", "-c", "1", "-W", "1", ip]
+
+
+def _ping_blocking(ip: str) -> bool:
+    """Blocking ICMP ping — always call via asyncio.to_thread(), never directly
+    from the event loop, or it will freeze the entire server."""
+    cmd = _ping_cmd(ip)
+    try:
+        r = _subprocess.run(cmd, capture_output=True, timeout=3)
+        return r.returncode == 0
+    except Exception as exc:
+        log.warning("blocking ping %s failed: %s", ip, exc)
+        return False
+
+
 async def _ping(ip: str) -> bool:
-    """Non-blocking single ICMP ping. Returns True if host responded."""
+    """Non-blocking single ICMP ping. Returns True if host responded.
+
+    On Windows (SelectorEventLoop), asyncio.create_subprocess_exec raises
+    NotImplementedError *synchronously* — before any await — which blocks the
+    event loop for every anchor in the gather() batch.  We detect Windows at
+    import time and skip straight to the thread-pool path, eliminating the
+    startup watchdog block entirely.
+    """
+    if _sys.platform == "win32":
+        return await asyncio.to_thread(_ping_blocking, ip)
+
+    # Non-Windows: use asyncio subprocess (truly non-blocking).
+    global _subprocess_warned
+    cmd = _ping_cmd(ip)
     try:
         proc = await asyncio.create_subprocess_exec(
-            "ping", "-c", "1", "-W", "1", ip,
+            *cmd,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
         await proc.wait()
         return proc.returncode == 0
-    except Exception:
-        return False
+    except Exception as exc:
+        if not _subprocess_warned:
+            _subprocess_warned = True
+            log.warning(
+                "asyncio ping failed (%s) — using thread-pool fallback "
+                "(this message appears once)", type(exc).__name__
+            )
+        return await asyncio.to_thread(_ping_blocking, ip)
 
 
-def _write_connectivity_log(db, anchor: Anchor, fail_count: int) -> None:
-    """Emit an EngineLog entry when an anchor crosses a fail threshold."""
-    # Only log at threshold boundaries (1, 3, 5) to avoid flooding
-    if fail_count not in (1, 3, 5):
-        return
-    level = "alert" if fail_count <= 2 else ("config" if fail_count <= 4 else "security")
-    msg = (
-        f"Anchor {anchor.anchor_id} ({anchor.ip_address}) unreachable — "
-        f"{fail_count} consecutive failure{'s' if fail_count > 1 else ''}"
-    )
+def _write_connectivity_log(db, anchor: Anchor, event: str, extra: dict | None = None) -> None:
+    """Emit an EngineLog entry on a connectivity state change."""
+    level_map = {"offline": "alert", "online": "info", "trying": "warn"}
+    msg_map = {
+        "offline": f"Anchor {anchor.anchor_id} ({anchor.ip_address}) went OFFLINE — 5 consecutive ping failures",
+        "online":  f"Anchor {anchor.anchor_id} ({anchor.ip_address}) is back ONLINE",
+        "trying":  f"Anchor {anchor.anchor_id} ({anchor.ip_address}) — first ping failure, retrying…",
+    }
     entry = EngineLog(
-        level=level,
+        level=level_map.get(event, "info"),
         source="connectivity",
-        message=msg,
-        meta={
-            "anchor_id":     anchor.anchor_id,
-            "ip":            anchor.ip_address,
-            "cycles_missed": fail_count,
-        },
+        message=msg_map.get(event, event),
+        meta={"anchor_id": anchor.anchor_id, "ip": anchor.ip_address, **(extra or {})},
         timestamp=datetime.now(timezone.utc),
     )
     db.add(entry)
 
-
+""" Polls continously for anchor connectivity and logs state changes to the database."""
 async def connectivity_poller() -> None:
     """
-    Poll every 1.5 s (half the default engine poll interval).
-    Pings all enabled anchors that have an IP address.
-    Updates anchor.status and generates EngineLog entries on failures.
+    Background anchor reachability monitor.
+
+    Baseline schedule: ping all anchors every 150 s (2.5 min).
+
+    State machine per anchor (tracked by _anchor_fail_counts):
+      0            → "online"   (ping succeeded)
+      1            → "trying"   (first failure; schedule 4 retries every 6 s)
+      2–4 (retry)  → still "trying" while retrying
+      5 (final)    → "offline"  (all retries exhausted)
+
+    last_reached is updated ONLY when a ping succeeds.
+    last_polled   is updated on every attempt.
+
+    When engine poll is active, log state transitions. In standby mode,
+    status is still updated silently (no log spam).
     """
-    log.info("Connectivity poller started (interval=1.5s)")
-    while True:
-        try:
+    BASELINE_INTERVAL = 150.0   # 2.5 min between normal sweeps
+    RETRY_INTERVAL    =   6.0   # 6 s between retries after first failure
+    MAX_RETRIES       =   4     # 4 retries = 5 total attempts before "offline"
+
+    log.info("Connectivity poller started (baseline=%.0fs, retry=%ds×%d)",
+             BASELINE_INTERVAL, int(RETRY_INTERVAL), MAX_RETRIES)
+
+    # Per-IP: number of consecutive failures (0 = last ping was OK)
+    _fail_counts: dict[str, int] = {}
+    # Per-IP: number of retry attempts still outstanding (0 = not in retry mode)
+    _retry_remaining: dict[str, int] = {}
+
+    _engine_poll_running: bool = False
+    _engine_check_counter: int = 10  # force immediate check
+
+    # Persistent HTTP client for engine health checks inside this task
+    _http = httpx.AsyncClient(timeout=2.0)
+
+    async def _sweep_anchors() -> None:
+        """Ping all enabled anchors, update DB state, and log all transitions.
+
+        All Postgres I/O runs in a thread-pool worker so the event loop stays
+        free to answer /health during the sweep.
+        """
+        # Phase 1 — load enabled anchor IPs off the event loop
+        def _load_ips():
             db = SessionLocal()
             try:
-                anchors = (
-                    db.query(Anchor)
-                    .filter_by(enabled=True)
-                    .filter(Anchor.ip_address != "")
-                    .all()
-                )
-                # Ping all anchors concurrently
-                results = await asyncio.gather(
-                    *[_ping(a.ip_address) for a in anchors],
-                    return_exceptions=True,
-                )
-                for anchor, ok in zip(anchors, results):
+                return [
+                    row[0]
+                    for row in db.query(Anchor.ip_address)
+                                 .filter_by(enabled=True)
+                                 .filter(Anchor.ip_address != "")
+                                 .all()
+                ]
+            finally:
+                db.close()
+
+        ips = await asyncio.to_thread(_load_ips)
+        if not ips:
+            return
+
+        now = datetime.now(timezone.utc)
+
+        # Phase 2 — ping all anchors concurrently (event-loop-friendly)
+        results = await asyncio.gather(
+            *[_ping(ip) for ip in ips],
+            return_exceptions=True,
+        )
+
+        # Phase 3 — commit state changes off the event loop
+        def _update_and_commit():
+            db = SessionLocal()
+            try:
+                anchor_map = {
+                    a.ip_address: a
+                    for a in db.query(Anchor)
+                               .filter_by(enabled=True)
+                               .filter(Anchor.ip_address.in_(ips))
+                               .all()
+                }
+                for ip, ok in zip(ips, results):
+                    anchor = anchor_map.get(ip)
+                    if not anchor:
+                        continue
                     if isinstance(ok, Exception):
                         ok = False
-                    ip = anchor.ip_address
+                    prev_status = anchor.status
+                    prev_fails  = _fail_counts.get(ip, 0)
+                    anchor.last_polled = now
                     if ok:
-                        _anchor_fail_counts[ip] = 0
-                        anchor.status = "online"
+                        # Success — reset failure tracking
+                        _fail_counts[ip]     = 0
+                        _retry_remaining[ip] = 0
+                        anchor.status        = "online"
+                        anchor.last_reached  = now
+                        if prev_fails > 0 and prev_status != "online":
+                            _write_connectivity_log(db, anchor, "online")
                     else:
-                        _anchor_fail_counts[ip] = _anchor_fail_counts.get(ip, 0) + 1
-                        anchor.status = "offline"
-                        _write_connectivity_log(db, anchor, _anchor_fail_counts[ip])
-                    anchor.last_polled = datetime.now(timezone.utc)
+                        # Failure
+                        _fail_counts[ip] = prev_fails + 1
+                        fails = _fail_counts[ip]
+                        if fails == 1:
+                            _retry_remaining[ip] = MAX_RETRIES
+                            anchor.status = "trying"
+                            _write_connectivity_log(db, anchor, "trying")
+                        elif fails > MAX_RETRIES + 1:
+                            anchor.status        = "offline"
+                            _retry_remaining[ip] = 0
+                            if prev_status != "offline":
+                                _write_connectivity_log(db, anchor, "offline")
+                        # else: still in retry window — keep "trying"
                 db.commit()
             finally:
                 db.close()
+
+        await asyncio.to_thread(_update_and_commit)
+
+    async def _retry_sweep(anchors_in_retry: list) -> None:
+        """Ping only anchors currently in retry mode.
+
+        DB commit runs in a thread-pool worker — same pattern as _sweep_anchors.
+        """
+        if not anchors_in_retry:
+            return
+
+        now = datetime.now(timezone.utc)
+
+        # Ping retry anchors concurrently (event-loop-friendly)
+        results = await asyncio.gather(
+            *[_ping(ip) for ip in anchors_in_retry],
+            return_exceptions=True,
+        )
+
+        # Commit results off the event loop
+        def _update_and_commit():
+            db = SessionLocal()
+            try:
+                for ip, ok in zip(anchors_in_retry, results):
+                    if isinstance(ok, Exception):
+                        ok = False
+                    anchor = db.query(Anchor).filter_by(ip_address=ip, enabled=True).first()
+                    if not anchor:
+                        continue
+                    anchor.last_polled = now
+                    if ok:
+                        _fail_counts[ip]     = 0
+                        _retry_remaining[ip] = 0
+                        anchor.status        = "online"
+                        anchor.last_reached  = now
+                        _write_connectivity_log(db, anchor, "online")
+                    else:
+                        _fail_counts[ip]     = _fail_counts.get(ip, 0) + 1
+                        remaining            = _retry_remaining.get(ip, 0) - 1
+                        _retry_remaining[ip] = max(0, remaining)
+                        if remaining <= 0:
+                            anchor.status = "offline"
+                            _write_connectivity_log(db, anchor, "offline")
+                        # else: still "trying" — no log (avoid retry spam)
+                db.commit()
+            finally:
+                db.close()
+
+        await asyncio.to_thread(_update_and_commit)
+
+    # ── Main loop ─────────────────────────────────────────────────────────────
+    next_sweep_in = 0.0   # trigger immediately on startup
+
+    while True:
+        try:
+            # Periodically check engine poll status
+            _engine_check_counter += 1
+            if _engine_check_counter >= 10:
+                _engine_check_counter = 0
+                try:
+                    r = await _http.get(f"http://localhost:{ENGINE_PORT}/health")
+                    _engine_poll_running = (
+                        r.status_code == 200
+                        and bool(r.json().get("poll_running", False))
+                    )
+                except Exception:
+                    _engine_poll_running = False
+
+            # Check if any anchors are in retry mode
+            retrying_ips = [ip for ip, rem in _retry_remaining.items() if rem > 0]
+            if retrying_ips:
+                await _retry_sweep(retrying_ips)
+                await asyncio.sleep(RETRY_INTERVAL)
+                continue
+
+            # Baseline sweep
+            next_sweep_in -= RETRY_INTERVAL
+            if next_sweep_in <= 0:
+                await _sweep_anchors()
+                next_sweep_in = BASELINE_INTERVAL
+
         except Exception as exc:
             log.warning("Connectivity poller error: %s", exc)
 
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(RETRY_INTERVAL)
 
 
 # ─── Background Task: Scope Violation Checker ────────────────────────────────
@@ -234,92 +478,256 @@ async def scope_checker() -> None:
 
     Also logs Info entries for any room transition (movement).
     """
-    log.info("Scope checker started (interval=10s, engine=%s)", ENGINE_API_URL)
+    # Use localhost:ENGINE_PORT (same as all other tasks) — ENGINE_API_URL
+    # targets Docker port 8001 which doesn't exist in desktop mode.
+    _engine_url = f"http://localhost:{ENGINE_PORT}"
+    _http = httpx.AsyncClient(timeout=3.0)
+
+    log.info("Scope checker started (interval=10s, engine=%s)", _engine_url)
     await asyncio.sleep(15)  # Give engine time to start before first check
 
     while True:
         try:
-            async with httpx.AsyncClient(timeout=2.0) as client:
-                resp = await client.get(f"{ENGINE_API_URL}/decisions", params={"limit": 50})
-                if resp.status_code != 200:
-                    await asyncio.sleep(10)
-                    continue
-                decisions = resp.json().get("items", [])
+            resp = await _http.get(f"{_engine_url}/decisions", params={"limit": 50})
+            if resp.status_code != 200:
+                await asyncio.sleep(10)
+                continue
+            decisions = resp.json().get("items", [])
         except Exception:
             # Engine not running — check again later
             await asyncio.sleep(10)
             continue
 
         try:
-            db = SessionLocal()
-            try:
-                tags = {t.tag_id: t for t in db.query(Tag).filter_by(enabled=True).all()}
-                seen: set[str] = set()
+            # Run all DB work in a thread so the event loop stays free
+            def _process_decisions():
+                db = SessionLocal()
+                try:
+                    tags = {t.tag_id: t for t in db.query(Tag).filter_by(enabled=True).all()}
+                    seen: set[str] = set()
 
-                for d in decisions:
-                    ssid    = d.get("device_id", "")
-                    room_id = d.get("room_id", "")
-                    method  = d.get("localization_method", "trilateration")
-                    conf    = float(d.get("confidence", 0.0))
+                    for d in decisions:
+                        ssid    = d.get("device_id", "")
+                        room_id = d.get("room_id", "")
+                        method  = d.get("localization_method", "trilateration")
+                        conf    = float(d.get("confidence", 0.0))
 
-                    tag = tags.get(ssid)
-                    if not tag or ssid in seen:
-                        continue
-                    seen.add(ssid)
+                        tag = tags.get(ssid)
+                        if not tag or ssid in seen:
+                            continue
+                        seen.add(ssid)
 
-                    prev_room = _tag_last_room.get(ssid)
+                        prev_room = _tag_last_room.get(ssid)
 
-                    # ── Info: movement (room changed) ───────────────────────
-                    if prev_room is not None and room_id and room_id != prev_room:
-                        db.add(EngineLog(
-                            level="info",
-                            tag_id=ssid,
-                            source="boundary",
-                            message=f"{tag.name or ssid} moved: {prev_room} → {room_id}",
-                            meta={"from": prev_room, "to": room_id,
-                                  "method": method, "confidence": conf},
-                            timestamp=datetime.now(timezone.utc),
-                        ))
-
-                    _tag_last_room[ssid] = room_id
-
-                    # ── Scope violation check ────────────────────────────────
-                    level = _priority_to_level(tag.priority)
-                    if level is None:
-                        continue  # Priority 1 — no scope restrictions
-
-                    # Room scope check
-                    if tag.room_scope and room_id and room_id not in tag.room_scope:
-                        # Deduplicate: only log once per (tag, room) pair
-                        dedup_key = f"{ssid}:{room_id}"
-                        if _tag_last_room.get(f"_scope_{dedup_key}") != room_id:
-                            _tag_last_room[f"_scope_{dedup_key}"] = room_id
+                        # ── Info: movement (room changed) ────────────────────
+                        if prev_room is not None and room_id and room_id != prev_room:
                             db.add(EngineLog(
-                                level=level,
+                                level="info",
                                 tag_id=ssid,
                                 source="boundary",
-                                message=(
-                                    f"{tag.name or ssid} (priority {tag.priority}) "
-                                    f"outside allowed rooms — currently in '{room_id}', "
-                                    f"scope: {tag.room_scope}"
-                                ),
-                                meta={
-                                    "current_room":  room_id,
-                                    "allowed_rooms": tag.room_scope,
-                                    "priority":      tag.priority,
-                                    "method":        method,
-                                    "confidence":    conf,
-                                },
+                                message=f"{tag.name or ssid} moved: {prev_room} → {room_id}",
+                                meta={"from": prev_room, "to": room_id,
+                                      "method": method, "confidence": conf},
                                 timestamp=datetime.now(timezone.utc),
                             ))
 
-                db.commit()
-            finally:
-                db.close()
+                        _tag_last_room[ssid] = room_id
+
+                        # ── Scope violation check ────────────────────────────
+                        level = _priority_to_level(tag.priority)
+                        if level is None:
+                            continue  # Priority 1 — no scope restrictions
+
+                        # Room scope check
+                        if tag.room_scope and room_id and room_id not in tag.room_scope:
+                            dedup_key = f"{ssid}:{room_id}"
+                            if _tag_last_room.get(f"_scope_{dedup_key}") != room_id:
+                                _tag_last_room[f"_scope_{dedup_key}"] = room_id
+                                db.add(EngineLog(
+                                    level=level,
+                                    tag_id=ssid,
+                                    source="boundary",
+                                    message=(
+                                        f"{tag.name or ssid} (priority {tag.priority}) "
+                                        f"outside allowed rooms — currently in '{room_id}', "
+                                        f"scope: {tag.room_scope}"
+                                    ),
+                                    meta={
+                                        "current_room":  room_id,
+                                        "allowed_rooms": tag.room_scope,
+                                        "priority":      tag.priority,
+                                        "method":        method,
+                                        "confidence":    conf,
+                                    },
+                                    timestamp=datetime.now(timezone.utc),
+                                ))
+
+                    db.commit()
+                finally:
+                    db.close()
+
+            await asyncio.to_thread(_process_decisions)
         except Exception as exc:
             log.warning("Scope checker error: %s", exc)
 
         await asyncio.sleep(10)
+
+
+# ─── Background Task: Survey Monitor ─────────────────────────────────────────
+
+async def survey_monitor() -> None:
+    """
+    Poll /survey/status on the engine every 3 s and write an EngineLog entry
+    (source='survey') whenever the survey state changes.
+
+    Detected transitions:
+      idle → running    → "Survey started"
+      running → done    → "Survey complete"
+      running → error   → "Survey error"
+      running → cancelled → "Survey cancelled"
+    """
+    CHECK_INTERVAL = 3.0
+    _last_status: str | None = None   # None = first poll not done yet
+    _http = httpx.AsyncClient(timeout=5.0)
+
+    log.info("Survey monitor started (interval=%.0fs)", CHECK_INTERVAL)
+
+    while True:
+        try:
+            r = await _http.get(f"http://localhost:{ENGINE_PORT}/survey/status")
+            if r.status_code == 200:
+                    st        = r.json()
+                    status    = st.get("status", "idle")
+                    room      = st.get("room_label") or "unknown room"
+                    ssid      = st.get("target_ssid") or "?"
+                    collected = st.get("collected_samples", 0)
+                    total     = st.get("total_samples", 0)
+
+                    if _last_status is None:
+                        _last_status = status   # first check, no transition to log
+
+                    elif status != _last_status:
+                        if status == "running":
+                            _write_survey_log("info",
+                                f"Survey started — room '{room}', SSID '{ssid}', "
+                                f"{total} samples requested",
+                                {"room_label": room, "target_ssid": ssid,
+                                 "total_samples": total, "event": "survey_start"},
+                            )
+                            log.info("[survey] Started: room=%r ssid=%r n=%d", room, ssid, total)
+
+                        elif status == "done":
+                            _write_survey_log("info",
+                                f"Survey complete — room '{room}', "
+                                f"{collected}/{total} samples collected",
+                                {"room_label": room, "collected_samples": collected,
+                                 "total_samples": total, "event": "survey_done"},
+                            )
+                            log.info("[survey] Done: room=%r %d/%d samples", room, collected, total)
+
+                        elif status == "cancelled":
+                            _write_survey_log("warn",
+                                f"Survey cancelled — room '{room}', "
+                                f"{collected}/{total} samples saved",
+                                {"room_label": room, "collected_samples": collected,
+                                 "total_samples": total, "event": "survey_cancelled"},
+                            )
+                            log.info("[survey] Cancelled: room=%r %d/%d saved", room, collected, total)
+
+                        elif status == "error":
+                            err = st.get("error") or "unknown error"
+                            _write_survey_log("alert",
+                                f"Survey error — room '{room}': {err}",
+                                {"room_label": room, "error": err,
+                                 "collected_samples": collected, "event": "survey_error"},
+                            )
+                            log.error("[survey] Error: room=%r err=%s", room, err)
+
+                        _last_status = status
+
+        except Exception:
+            pass   # engine not running yet — silent skip
+
+        await asyncio.sleep(CHECK_INTERVAL)
+
+
+# ─── Background Task: Engine Connectivity Monitor ────────────────────────────
+
+async def engine_monitor() -> None:
+    """
+    Poll the Hybrid engine health endpoint every 10 s and log every
+    connect / disconnect transition so there is a permanent record of
+    when the engine went down and when it came back.
+
+    Tracks cumulative downtime so the reconnect log entry includes
+    "engine was unreachable for X seconds".
+
+    IMPORTANT: Only writes to the DB on state TRANSITIONS (up→down or
+    down→up), NOT on every tick.  Logging every tick floods the DB and
+    causes the very disconnection issues we're trying to detect.
+    """
+    CHECK_INTERVAL = 10.0   # seconds between checks
+    HTTP_TIMEOUT   =  5.0   # per-request timeout (generous for mid-survey load)
+
+    _engine_up: bool | None = None   # None = not yet known
+    _went_down_at: datetime | None = None
+    _last_error: str | None = None   # raw exception from most recent failed probe
+
+    # Persistent client — reused across all iterations, no churn
+    _http = httpx.AsyncClient(timeout=HTTP_TIMEOUT)
+
+    log.info("Engine monitor started (interval=%.0fs, timeout=%.0fs)", CHECK_INTERVAL, HTTP_TIMEOUT)
+
+    while True:
+        raw_error: str | None = None
+        try:
+            r = await _http.get(f"http://localhost:{ENGINE_PORT}/health")
+            now_up = r.status_code == 200
+            if not now_up:
+                raw_error = f"HTTP {r.status_code}: {r.text[:200]}"
+        except Exception as exc:
+            now_up = False
+            raw_error = f"{type(exc).__name__}: {exc}"
+
+        now = datetime.now(timezone.utc)
+
+        if _engine_up is None:
+            # First check — just record current state, don't log (startup already did it)
+            _engine_up = now_up
+            if not now_up:
+                _went_down_at = now
+                _last_error   = raw_error
+
+        elif now_up and not _engine_up:
+            # Transition: down → up
+            downtime_s = int((now - _went_down_at).total_seconds()) if _went_down_at else "?"
+            _write_system_log("info",
+                f"Engine reconnected on port {ENGINE_PORT} (was unreachable for {downtime_s}s)",
+                {"port": ENGINE_PORT, "downtime_s": downtime_s, "event": "engine_reconnect",
+                 "last_error": _last_error},
+            )
+            log.info("Engine reconnected after %ss", downtime_s)
+            _engine_up  = True
+            _went_down_at = None
+            _last_error   = None
+
+        elif not now_up and _engine_up:
+            # Transition: up → down — include raw error so the log shows *why*
+            _went_down_at = now
+            _last_error   = raw_error
+            _write_system_log("alert",
+                f"Engine on port {ENGINE_PORT} became unreachable"
+                + (f" — {raw_error}" if raw_error else ""),
+                {"port": ENGINE_PORT, "event": "engine_disconnect", "raw_error": raw_error},
+            )
+            log.warning("Engine on port %s became unreachable: %s", ENGINE_PORT, raw_error)
+            _engine_up = False
+
+        elif not now_up and not _engine_up:
+            # Still down — update last_error in case it changes
+            _last_error = raw_error
+
+        await asyncio.sleep(CHECK_INTERVAL)
 
 
 # ─── Lifespan ─────────────────────────────────────────────────────────────────
@@ -327,64 +735,87 @@ async def scope_checker() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # ── startup ──────────────────────────────────────────────────────────────
-    log.info("Creating database tables (if not exist)...")
-    Base.metadata.create_all(bind=db_engine)
-    log.info("Running column migrations...")
-    _migrate_columns(db_engine)
-    log.info("Platform API ready.")
+    # Run all blocking startup I/O in a thread pool so the event loop (and
+    # therefore uvicorn's HTTP server) stays responsive from the very first
+    # moment.  create_all, migrations, and the initial _write_system_log calls
+    # each require synchronous Postgres round-trips that previously caused a
+    # 2-second event-loop stall on cold start.
+    def _blocking_startup() -> str | None:
+        """Returns the engine health note (or None) to be logged after."""
+        log.info("Creating database tables (if not exist)...")
+        Base.metadata.create_all(bind=db_engine)
+        log.info("Running column migrations...")
+        _migrate_columns(db_engine)
+        log.info("Platform API ready.")
 
-    # Write system log entries so they appear in the Logs page
-    _write_system_log("info", f"Platform backend started on port {PLATFORM_PORT}", {
-        "port": PLATFORM_PORT,
-        "engine_url": ENGINE_API_URL,
-        "engine_port": ENGINE_PORT,
-    })
-    _write_system_log("info", f"Database connected — tables verified", {
-        "db_url": str(db_engine.url).split("@")[-1],  # host/db only, no creds
-    })
+        _write_system_log("info", f"Platform backend started on port {PLATFORM_PORT}", {
+            "port": PLATFORM_PORT,
+            "engine_url": ENGINE_API_URL,
+            "engine_port": ENGINE_PORT,
+        })
+        _write_system_log("info", "Database connected — tables verified", {
+            "db_url": str(db_engine.url).split("@")[-1],
+        })
+        return None   # engine check done async below
 
-    # Check engine reachability at startup
+    await asyncio.to_thread(_blocking_startup)
+
+    # Check engine reachability at startup (async — doesn't block)
     try:
         async with httpx.AsyncClient(timeout=2.0) as client:
             resp = await client.get(f"http://localhost:{ENGINE_PORT}/health")
             if resp.status_code == 200:
-                _write_system_log("info", f"Hybrid engine reachable on port {ENGINE_PORT}", {
-                    "port": ENGINE_PORT, "response": resp.json(),
-                })
+                await asyncio.to_thread(
+                    _write_system_log,
+                    "info",
+                    f"Hybrid engine reachable on port {ENGINE_PORT}",
+                    {"port": ENGINE_PORT, "response": resp.json()},
+                )
             else:
-                _write_system_log("warn", f"Hybrid engine returned {resp.status_code} on port {ENGINE_PORT}")
+                await asyncio.to_thread(
+                    _write_system_log,
+                    "warn",
+                    f"Hybrid engine returned {resp.status_code} on port {ENGINE_PORT}",
+                    None,
+                )
     except Exception:
-        _write_system_log("warn", f"Hybrid engine not reachable on port {ENGINE_PORT} (will retry when needed)", {
-            "port": ENGINE_PORT,
-        })
+        await asyncio.to_thread(
+            _write_system_log,
+            "warn",
+            f"Hybrid engine not reachable on port {ENGINE_PORT} (will retry when needed)",
+            {"port": ENGINE_PORT},
+        )
 
     # Start background tasks
-    poller_task = asyncio.create_task(connectivity_poller(), name="connectivity_poller")
-    scope_task  = asyncio.create_task(scope_checker(),       name="scope_checker")
+    watchdog_task = asyncio.create_task(_loop_watchdog(),      name="loop_watchdog")
+    poller_task   = asyncio.create_task(connectivity_poller(), name="connectivity_poller")
+    scope_task    = asyncio.create_task(scope_checker(),       name="scope_checker")
+    monitor_task  = asyncio.create_task(engine_monitor(),      name="engine_monitor")
+    survey_task   = asyncio.create_task(survey_monitor(),      name="survey_monitor")
 
-    _write_system_log("info", "Background tasks started: connectivity poller (1.5s), scope checker (10s)")
+    await asyncio.to_thread(
+        _write_system_log,
+        "info",
+        "Background tasks started — loop_watchdog, connectivity_poller, scope_checker, engine_monitor, survey_monitor",
+        None,
+    )
 
-    yield
+    yield  # ── app is running; block here until shutdown ──────────────────
 
-    # ── shutdown ─────────────────────────────────────────────────────────────
-    _write_system_log("info", "Platform backend shutting down")
-    poller_task.cancel()
-    scope_task.cancel()
-    for t in (poller_task, scope_task):
-        try:
-            await t
-        except asyncio.CancelledError:
-            pass
-    log.info("Shutting down.")
+    # ── Shutdown: cancel all background tasks ──────────────────────────────
+    log.info("Shutting down background tasks...")
+    for task in (watchdog_task, poller_task, scope_task, monitor_task, survey_task):
+        task.cancel()
+    await asyncio.gather(
+        watchdog_task, poller_task, scope_task, monitor_task, survey_task,
+        return_exceptions=True,
+    )
+    log.info("All background tasks stopped.")
 
 
-# ─── App ──────────────────────────────────────────────────────────────────────
+# ─── FastAPI Application ──────────────────────────────────────────────────────
 
-app = FastAPI(
-    title="IPS Management Platform",
-    version="1.0.0",
-    lifespan=lifespan,
-)
+app = FastAPI(title="IPS Management Platform", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -394,7 +825,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Register route modules
 app.include_router(hierarchy_router)
 app.include_router(devices_router)
 app.include_router(logs_router)
@@ -403,10 +833,10 @@ app.include_router(floorplan_editor_router)
 
 
 @app.get("/health")
-def health():
-    return {"ok": True, "service": "ips-platform"}
+async def health():
+    return {"status": "ok"}
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8080, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=PLATFORM_PORT, reload=True)

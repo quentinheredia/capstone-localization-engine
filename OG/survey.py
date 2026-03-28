@@ -23,7 +23,7 @@ def run_survey(room_label, target_ssid, samples=10):
     
     print(f"\n📡 Starting survey for '{room_label}' tracking '{target_ssid}'")
     print(f"Stand still. Collecting {samples} samples...")
-    
+    yt
     collected_vectors = []
     executor = ThreadPoolExecutor(max_workers=len(active_aps))
     
