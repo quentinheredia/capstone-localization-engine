@@ -252,11 +252,36 @@ setInterval(poll, 2000);
 class JsApi:
     """
     Exposed to the frontend via pywebview's js_api.
-    Allows the React app to open native OS windows for pop-out maps.
+    Allows the React app to open native OS windows for pop-out maps,
+    and to control the main window (minimize / maximize / close).
     """
     def __init__(self):
         print("[JsApi] Initialized")
         self._popout_windows: dict = {}   # method -> webview.Window (or None)
+        self._main_window = None          # set by App after window is created
+        self._is_maximized = False
+
+    def set_main_window(self, window) -> None:
+        """Called by App immediately after create_window() so JS can control it."""
+        self._main_window = window
+
+    def minimize_window(self) -> None:
+        if self._main_window:
+            self._main_window.minimize()
+
+    def close_window(self) -> None:
+        if self._main_window:
+            self._main_window.destroy()
+
+    def toggle_maximize(self) -> None:
+        if not self._main_window:
+            return
+        if self._is_maximized:
+            self._main_window.restore()
+            self._is_maximized = False
+        else:
+            self._main_window.maximize()
+            self._is_maximized = True
 
     def _on_window_closed(self, method: str):
         """Called when the user closes a pop-out window — removes the stale reference."""
@@ -641,13 +666,18 @@ class App:
 
         # Create the window (shows splash immediately)
         self._window = webview.create_window(
-            title   = "IPS Platform — Indoor Positioning System",
-            html    = splash,
-            width   = 1600,
-            height  = 900,
-            min_size= (1200, 700),
-            js_api  = self._js_api,
+            title     = "IPS Platform — Indoor Positioning System",
+            html      = splash,
+            width     = 1600,
+            height    = 900,
+            min_size  = (1200, 700),
+            js_api    = self._js_api,
+            frameless = True,   # custom dark title bar rendered in HTML
         )
+
+        # Give the JS API a reference to the window so the frontend
+        # can call minimize / maximize / close via pywebview.api.*
+        self._js_api.set_main_window(self._window)
 
         # Start the server startup in a background thread
         t = threading.Thread(target=self._startup_thread, daemon=True)
