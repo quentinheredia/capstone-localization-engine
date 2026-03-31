@@ -8,11 +8,13 @@ Tags are always global.
 
 import asyncio
 import logging
+import os
 import socket
 import subprocess
 import sys
 from datetime import datetime, timezone
 from typing import List, Optional
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query as QParam
 from sqlalchemy.orm import Session
 
@@ -51,9 +53,11 @@ def _build_ping_cmd(ip: str) -> list[str]:
 async def _ping_once(ip: str) -> bool:
     """
     Single ICMP ping using asyncio subprocess.
-    Falls back to a blocking subprocess call if the asyncio method raises
-    NotImplementedError (happens on Windows when the event loop lacks
-    subprocess support — e.g. uvicorn running on SelectorEventLoop).
+    Falls back to running the blocking subprocess in a thread-pool executor if
+    the asyncio method raises NotImplementedError (happens on Windows when the
+    event loop lacks subprocess support — e.g. uvicorn on SelectorEventLoop).
+    The thread-pool path keeps the event loop free so it doesn't trigger the
+    watchdog.
     """
     cmd = _build_ping_cmd(ip)
     try:
@@ -66,12 +70,14 @@ async def _ping_once(ip: str) -> bool:
         log.debug("ping %s → returncode=%s", ip, proc.returncode)
         return proc.returncode == 0
     except NotImplementedError:
-        # Windows SelectorEventLoop doesn't support subprocesses — fall back
-        log.warning("asyncio subprocess not available (SelectorEventLoop?), using blocking ping for %s", ip)
-        return _ping_blocking(ip)
+        # Windows SelectorEventLoop doesn't support subprocesses.
+        # Run blocking ping in the default thread-pool executor so we never
+        # hold the event loop (avoids the 12+ s watchdog warnings).
+        log.debug("asyncio subprocess unavailable (SelectorEventLoop), offloading ping %s to thread pool", ip)
+        return await asyncio.get_event_loop().run_in_executor(None, _ping_blocking, ip)
     except Exception as exc:
-        log.warning("asyncio ping %s failed (%s: %s), trying blocking fallback", ip, type(exc).__name__, exc)
-        return _ping_blocking(ip)
+        log.warning("asyncio ping %s failed (%s: %s), trying thread-pool fallback", ip, type(exc).__name__, exc)
+        return await asyncio.get_event_loop().run_in_executor(None, _ping_blocking, ip)
 
 
 def _ping_blocking(ip: str) -> bool:
@@ -387,3 +393,130 @@ def delete_tag(tag_pk: int, db: Session = Depends(get_db)):
         raise HTTPException(404, "Tag not found")
     db.delete(tag)
     db.commit()
+
+
+@router.post("/tags/poll")
+async def poll_tags_now(db: Session = Depends(get_db)):
+    """
+    Manually trigger an immediate SSID presence scan for all enabled tags.
+
+    Calls the engine's GET /seen_ssids endpoint, then checks each enabled tag
+    with a non-empty SSID against the results.  Updates tag.status and
+    tag.last_polled in the DB, writes EngineLog entries on status transitions
+    and a summary entry, and returns per-tag results.
+
+    Returns: {polled, results: [{tag_id, ssid, seen, status, signals}]}
+    """
+    engine_port = int(os.environ.get("ENGINE_PORT", "8000"))
+    engine_url = f"http://localhost:{engine_port}/seen_ssids"
+
+    # Fetch seen SSIDs from the engine (max_age_s=120 to match tag_poller)
+    seen: dict = {}
+    engine_error: str | None = None
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(engine_url, params={"max_age_s": 120})
+            resp.raise_for_status()
+            payload = resp.json()
+            seen = payload.get("ssids", {})
+    except httpx.ConnectError:
+        engine_error = "Cannot reach engine — is it running?"
+    except Exception as exc:
+        engine_error = f"Engine request failed: {type(exc).__name__}: {exc}"
+
+    if engine_error:
+        raise HTTPException(502, engine_error)
+
+    tags = (
+        db.query(Tag)
+        .filter_by(enabled=True)
+        .filter(Tag.ssid != "")
+        .filter(Tag.ssid.isnot(None))
+        .all()
+    )
+
+    if not tags:
+        db.add(EngineLog(
+            level="info",
+            source="connectivity",
+            message="Manual tag scan triggered — no enabled tags with an SSID configured",
+            meta={},
+            timestamp=datetime.now(timezone.utc),
+        ))
+        db.commit()
+        return {"polled": 0, "results": []}
+
+    now = datetime.now(timezone.utc)
+    results = []
+    online_ids, offline_ids, changed = [], [], []
+
+    for tag in tags:
+        ssid = tag.ssid or ""
+        entry = seen.get(ssid)
+        is_seen = entry is not None
+        signals: dict = entry.get("signals", {}) if entry else {}
+
+        prev_status = tag.status
+        tag.last_polled = now
+
+        new_status = "online" if is_seen else "offline"
+        tag.status = new_status
+
+        if is_seen:
+            online_ids.append(tag.tag_id)
+        else:
+            offline_ids.append(tag.tag_id)
+
+        if prev_status != new_status:
+            changed.append((tag.tag_id, prev_status, new_status))
+            sig_str = "  ".join(f"{ap}:{v:+.0f}" for ap, v in sorted(signals.items())) if signals else "no signal data"
+            level = "info" if is_seen else "alert"
+            verb = "ONLINE" if is_seen else "OFFLINE (not seen)"
+            db.add(EngineLog(
+                level=level,
+                source="connectivity",
+                message=f"[Manual scan] Tag '{tag.name or tag.tag_id}' ({ssid}) — {verb}  {sig_str}",
+                meta={
+                    "tag_id": tag.tag_id,
+                    "ssid": ssid,
+                    "prev_status": prev_status,
+                    "signals": signals,
+                    "trigger": "manual",
+                },
+                timestamp=now,
+            ))
+
+        results.append({
+            "tag_id": tag.tag_id,
+            "ssid": ssid,
+            "seen": is_seen,
+            "status": new_status,
+            "signals": signals,
+        })
+
+    # Summary log
+    total = len(tags)
+    n_online = len(online_ids)
+    n_offline = len(offline_ids)
+    summary = (
+        f"Manual tag scan complete — {n_online}/{total} seen"
+        + (f", {n_offline} not detected" if n_offline else "")
+        + (f" | Changes: {', '.join(f'{t} {p}→{s}' for t, p, s in changed)}" if changed else " | No status changes")
+    )
+    db.add(EngineLog(
+        level="info",
+        source="connectivity",
+        message=summary,
+        meta={
+            "trigger": "manual",
+            "total": total,
+            "online": n_online,
+            "offline": n_offline,
+            "online_ids": online_ids,
+            "offline_ids": offline_ids,
+        },
+        timestamp=now,
+    ))
+
+    db.commit()
+    return {"polled": total, "results": results}

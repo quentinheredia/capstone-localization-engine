@@ -229,6 +229,8 @@
           api(PLATFORM_API, `/tags/${id}`, { method: "DELETE" }),
         updateTag: (id, d) =>
           api(PLATFORM_API, `/tags/${id}`, { method: "PATCH", body: d }),
+        pollTagsNow: () =>
+          api(PLATFORM_API, "/tags/poll", { method: "POST" }),
         // Logs
         listCrossings: (p) => api(PLATFORM_API, "/crossings", { params: p }),
         listAlerts: (p) => api(PLATFORM_API, "/alerts", { params: p }),
@@ -363,6 +365,8 @@
           api(ENGINE_API, `/survey/radiomap/${encodeURIComponent(room)}`, {
             method: "DELETE",
           }),
+        surveyRoomVectors: (room) =>
+          api(ENGINE_API, `/survey/radiomap/${encodeURIComponent(room)}`),
       };
 
       // ─── SHARED COMPONENTS ───────────────────────────────────────────────
@@ -375,6 +379,8 @@
           blue: "bg-sky-500/10 text-sky-400 border border-sky-500/30",
           gray: "bg-surface-dim text-ink-secondary border border-border",
           purple: "bg-violet-500/15 text-violet-400 border border-violet-500/30",
+          teal: "bg-teal-500/15 text-teal-400 border border-teal-500/30",
+          orange: "bg-orange-500/15 text-orange-400 border border-orange-500/30",
         };
         return h(
           "span",
@@ -5598,6 +5604,30 @@
           room_scope: "",
         });
         const [creating, setCreating] = useState(false);
+        const [tagPolling, setTagPolling] = useState(false);
+        const [tagPollMsg, setTagPollMsg] = useState(null);
+
+        const handleTagPollNow = async () => {
+          setTagPolling(true);
+          setTagPollMsg(null);
+          try {
+            const res = await platform.pollTagsNow();
+            const seen = res.results?.filter((r) => r.seen).length ?? 0;
+            const total = res.polled ?? 0;
+            setTagPollMsg({
+              ok: true,
+              text: `Scanned ${total} tag${total !== 1 ? "s" : ""} — ${seen} detected`,
+            });
+            reload();
+          } catch (e) {
+            const msg = e.message?.includes("Failed to fetch")
+              ? "Cannot reach platform backend — is it running?"
+              : e.message;
+            setTagPollMsg({ ok: false, text: msg });
+          } finally {
+            setTagPolling(false);
+          }
+        };
 
         const parseScope = (val) =>
           val.trim() === "" || val.trim() === "ALL"
@@ -5823,17 +5853,41 @@
               }),
               h(
                 "div",
-                { className: "flex items-center gap-3" },
+                { className: "flex flex-col items-end gap-2" },
                 h(
-                  "span",
-                  { className: "text-sm text-muted" },
-                  `${items.length} tags`,
-                ),
-                !showCreate &&
+                  "div",
+                  { className: "flex items-center gap-3" },
+                  h(
+                    "span",
+                    { className: "text-sm text-muted" },
+                    `${items.length} tags`,
+                  ),
                   h(
                     Button,
-                    { size: "sm", onClick: () => setShowCreate(true) },
-                    "+ Register Tag",
+                    {
+                      size: "sm",
+                      variant: "secondary",
+                      onClick: handleTagPollNow,
+                      disabled: tagPolling,
+                    },
+                    tagPolling ? "Scanning…" : "📡 Scan Tags",
+                  ),
+                  !showCreate &&
+                    h(
+                      Button,
+                      { size: "sm", onClick: () => setShowCreate(true) },
+                      "+ Register Tag",
+                    ),
+                ),
+                tagPollMsg &&
+                  h(
+                    "span",
+                    {
+                      className: tagPollMsg.ok
+                        ? "text-xs text-green-600"
+                        : "text-xs text-red-500",
+                    },
+                    tagPollMsg.text,
                   ),
               ),
             ),
@@ -6124,6 +6178,11 @@
           color: "purple",
           desc: "Pattern matching against a pre-recorded radiomap. Requires survey calibration first.",
         },
+        gp: {
+          label: "Sparse GP",
+          color: "teal",
+          desc: "Sparse Gaussian Process regression. Predicts continuous (x, y) coordinates with uncertainty from survey data.",
+        },
         ble: {
           label: "BLE",
           color: "green",
@@ -6410,6 +6469,10 @@
         const [selectedCampusId, setSelectedCampusId] = useState(null);
         const [selectedBuilding, setSelectedBuilding] = useState("");
         const [selectedFloor, setSelectedFloor] = useState("");
+        // Vector viewer state
+        const [viewingRoom, setViewingRoom] = useState(null);
+        const [roomVectors, setRoomVectors] = useState(null);
+        const [vectorsLoading, setVectorsLoading] = useState(false);
 
         // Campus hierarchy for location selector
         const { data: campuses } = useApi(() => platform.listCampuses());
@@ -6460,6 +6523,17 @@
             ? engine.surveyTargets().catch(() => null)
             : Promise.resolve(null),
         );
+
+        // Registered tags from the platform DB (for SSID combo suggestions)
+        const { data: tagsData } = useApi(() =>
+          platform.listTags({ limit: 200 }).catch(() => null)
+        );
+        const _tagsList = Array.isArray(tagsData) ? tagsData : (tagsData?.items ?? []);
+        const registeredTagSsids = _tagsList
+          .map((t) => ({ ssid: t.ssid, label: t.name || t.tag_id }))
+          .filter((t) => t.ssid);
+
+        const [showDebug, setShowDebug] = React.useState(false);
 
         const isRunning = surveyStatus?.status === "running";
         const isDone = surveyStatus?.status === "done";
@@ -6624,6 +6698,59 @@
               ),
           ),
 
+          // ── Debug Panel ────────────────────────────────────────────────────
+          h(
+            "div",
+            {
+              className:
+                "bg-surface-dim border border-border rounded-lg p-3 text-xs space-y-2",
+            },
+            h(
+              "button",
+              {
+                onClick: () => setShowDebug(!showDebug),
+                className:
+                  "text-muted hover:text-ink font-mono cursor-pointer underline",
+              },
+              `${showDebug ? "▼" : "▶"} Debug: Registered Tags (${registeredTagSsids.length} found)`,
+            ),
+            showDebug &&
+              h(
+                "div",
+                { className: "font-mono text-xs space-y-1 bg-surface rounded p-2" },
+                _tagsList.length > 0
+                  ? h(
+                      React.Fragment,
+                      null,
+                      h("div", null, `Raw tags fetched: ${_tagsList.length}`),
+                      _tagsList.map((t) =>
+                        h(
+                          "div",
+                          {
+                            key: t.tag_id,
+                            className: t.ssid ? "text-emerald-400" : "text-red-400",
+                          },
+                          `• ${t.tag_id} | name="${t.name || "—"}" | ssid="${t.ssid || "—"}" | enabled=${t.enabled}`,
+                        ),
+                      ),
+                      h("div", { className: "border-t border-border mt-1 pt-1" }),
+                      h(
+                        "div",
+                        null,
+                        `Filtered (with SSID): ${registeredTagSsids.length}`,
+                      ),
+                      registeredTagSsids.map((t) =>
+                        h(
+                          "div",
+                          { key: t.ssid, className: "text-emerald-400" },
+                          `✓ ${t.ssid} (${t.label})`,
+                        ),
+                      ),
+                    )
+                  : h("div", { className: "text-muted" }, "Loading tags..."),
+              ),
+          ),
+
           // ── Two-column layout ──────────────────────────────────────────────
           h(
             "div",
@@ -6755,7 +6882,7 @@
                 }),
               ),
 
-              // Target SSID
+              // Target SSID — free-type or pick a registered tag / configured target
               h(
                 "div",
                 { className: "space-y-1" },
@@ -6770,21 +6897,36 @@
                       `(configured: ${targets.join(", ")})`,
                     ),
                 ),
-                h("input", {
-                  type: "text",
-                  value: ssidInput,
-                  onChange: (e) => setSsidInput(e.target.value),
-                  placeholder: targets[0] || "SSID of device to track",
-                  disabled: isRunning,
-                  className:
-                    "w-full px-3 py-1.5 text-sm rounded-md border border-border bg-surface focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-50",
-                }),
-                targets.length > 0 &&
-                  h(
-                    "p",
-                    { className: "text-xs text-muted" },
-                    "Leave blank to use the first configured target.",
-                  ),
+                h(
+                  "select",
+                  {
+                    value: ssidInput,
+                    onChange: (e) => setSsidInput(e.target.value),
+                    disabled: isRunning,
+                    className:
+                      "w-full px-3 py-1.5 text-sm rounded-md border border-border bg-surface focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-50",
+                  },
+                  [
+                    h("option", { key: "__blank", value: "" }, "— Select a target SSID —"),
+                    // Registered tags
+                    ...registeredTagSsids.map((t) =>
+                      h("option", { key: `tag-${t.ssid}`, value: t.ssid },
+                        t.label && t.label !== t.ssid ? `${t.label} (${t.ssid})` : t.ssid,
+                      )
+                    ),
+                    // Any configured targets not already listed
+                    ...targets
+                      .filter((s) => !registeredTagSsids.some((t) => t.ssid === s))
+                      .map((s) => h("option", { key: `cfg-${s}`, value: s }, s)),
+                  ]
+                ),
+                h(
+                  "p",
+                  { className: "text-xs text-muted" },
+                  registeredTagSsids.length > 0
+                    ? `${registeredTagSsids.length} registered tag${registeredTagSsids.length !== 1 ? "s" : ""} available. Leave blank to use first configured target.`
+                    : "Leave blank to use the first configured target.",
+                ),
               ),
 
               // Sample count
@@ -7065,7 +7207,31 @@
                                 `${info.ap_count} AP${info.ap_count !== 1 ? "s" : ""}`,
                               ),
                           ),
-                          h(
+                          // Inspect vectors button
+                        h(
+                          "button",
+                          {
+                            onClick: async () => {
+                              setViewingRoom(room);
+                              setRoomVectors(null);
+                              setVectorsLoading(true);
+                              try {
+                                const data = await engine.surveyRoomVectors(room);
+                                setRoomVectors(data);
+                              } catch (e) {
+                                setRoomVectors({ error: String(e) });
+                              } finally {
+                                setVectorsLoading(false);
+                              }
+                            },
+                            title: "Inspect stored RSSI vectors",
+                            className:
+                              "text-xs px-2 py-1 rounded text-sky-400 hover:bg-sky-500/15 transition-colors opacity-0 group-hover:opacity-100",
+                          },
+                          "🔍",
+                        ),
+                        // Delete button
+                        h(
                             "button",
                             {
                               onClick: () => handleDeleteRoom(room),
@@ -7111,6 +7277,120 @@
                 ),
             ),
           ),
+
+          // ── Room Vector Inspector Modal ───────────────────────────────────
+          viewingRoom &&
+            h(
+              "div",
+              {
+                className:
+                  "fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm",
+                onClick: (e) => {
+                  if (e.target === e.currentTarget) setViewingRoom(null);
+                },
+              },
+              h(
+                "div",
+                {
+                  className:
+                    "bg-panel border border-border rounded-2xl shadow-2xl w-full max-w-2xl mx-4 flex flex-col max-h-[80vh]",
+                },
+                // Header
+                h(
+                  "div",
+                  {
+                    className:
+                      "flex items-center justify-between px-5 py-4 border-b border-border",
+                  },
+                  h(
+                    "div",
+                    null,
+                    h(
+                      "h2",
+                      { className: "font-semibold text-ink text-sm" },
+                      `RSSI Vectors — ${viewingRoom}`,
+                    ),
+                    !vectorsLoading && roomVectors && !roomVectors.error &&
+                      h(
+                        "p",
+                        { className: "text-xs text-muted mt-0.5" },
+                        `${roomVectors.count} sample${roomVectors.count !== 1 ? "s" : ""}`,
+                        roomVectors.averages && Object.keys(roomVectors.averages).length > 0 &&
+                          ` · averages: ${Object.entries(roomVectors.averages)
+                            .sort(([a], [b]) => a.localeCompare(b))
+                            .map(([ap, v]) => `${ap}: ${v > 0 ? "+" : ""}${v}`)
+                            .join(", ")}`,
+                      ),
+                  ),
+                  h(
+                    "button",
+                    {
+                      onClick: () => setViewingRoom(null),
+                      className:
+                        "text-muted hover:text-ink text-xl leading-none px-2",
+                    },
+                    "✕",
+                  ),
+                ),
+                // Body
+                h(
+                  "div",
+                  { className: "overflow-y-auto flex-1 p-4" },
+                  vectorsLoading &&
+                    h(
+                      "div",
+                      {
+                        className:
+                          "flex items-center justify-center py-12 text-muted text-sm",
+                      },
+                      "Loading vectors…",
+                    ),
+                  roomVectors?.error &&
+                    h(
+                      "p",
+                      { className: "text-red-400 text-sm p-2" },
+                      roomVectors.error,
+                    ),
+                  !vectorsLoading && roomVectors && !roomVectors.error &&
+                    h(
+                      "div",
+                      { className: "space-y-1.5" },
+                      (roomVectors.vectors || []).map((vec, i) => {
+                        const apKeys = Object.keys(vec).sort();
+                        return h(
+                          "div",
+                          {
+                            key: i,
+                            className:
+                              "flex items-center gap-3 px-3 py-2 rounded-lg bg-surface-dim text-xs font-mono",
+                          },
+                          h(
+                            "span",
+                            { className: "text-muted w-6 shrink-0 text-right" },
+                            `#${i + 1}`,
+                          ),
+                          h(
+                            "div",
+                            { className: "flex flex-wrap gap-x-4 gap-y-0.5" },
+                            apKeys.map((ap) =>
+                              h(
+                                "span",
+                                { key: ap },
+                                h("span", { className: "text-sky-400" }, ap),
+                                h(
+                                  "span",
+                                  { className: "text-ink ml-1" },
+                                  `${vec[ap] > 0 ? "+" : ""}${vec[ap].toFixed(0)}`,
+                                ),
+                              ),
+                            ),
+                          ),
+                        );
+                      }),
+                    ),
+                ),
+              ),
+            ),
 
           // ── Survey Activity Log ───────────────────────────────────────────
           h(
@@ -8084,8 +8364,8 @@
                           { className: "py-3 px-3" },
                           h(
                             Badge,
-                            { color: "blue" },
-                            c.localization_method || "rssi",
+                            { color: (METHOD_INFO[c.localization_method] || {}).color || "blue" },
+                            (METHOD_INFO[c.localization_method] || {}).label || c.localization_method || "rssi",
                           ),
                         ),
                         h(

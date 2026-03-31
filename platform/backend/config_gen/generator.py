@@ -18,10 +18,13 @@ Or call the API route:
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, Optional
 from sqlalchemy.orm import Session
 
 from models import Campus, Building, Floor, Room, Anchor, Tag
+
+log = logging.getLogger(__name__)
 
 
 def generate_config(
@@ -80,6 +83,19 @@ def generate_config(
                         "username": anchor.username,
                         "password": anchor.password,
                     }
+                else:
+                    log.debug(
+                        "  [config_gen] Skipped anchor %s on floor %s/%s — type=%r enabled=%s",
+                        anchor.anchor_id, building.name, floor.name,
+                        anchor.anchor_type, anchor.enabled,
+                    )
+            if not wifi_aps:
+                log.warning(
+                    "[config_gen] Floor %s/%s/%s has 0 wifi_aps — "
+                    "anchors on this floor: %s",
+                    campus.name, building.name, floor.name,
+                    [(a.anchor_id, a.anchor_type, a.enabled) for a in floor.anchors],
+                )
 
             # ToF anchors (ESP32 with tof capability)
             tof_anchors: Dict[str, Any] = {}
@@ -176,6 +192,7 @@ def generate_config(
             # Per-method CSV logs — different header sets per method
             "csv_trilat_log_path": "trilat_log.csv",
             "csv_finger_log_path": "finger_log.csv",
+            "csv_gp_log_path":     "gp_log.csv",
             "csv_ble_log_path":    "ble_log.csv",
             "csv_tof_log_path":    "tof_log.csv",
         },

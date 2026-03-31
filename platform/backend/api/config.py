@@ -66,14 +66,17 @@ def _engine_call(
             log.warning("Engine call %s %s returned HTTP %s: %s", method, path, r.status_code, body)
             return {"ok": False, "error": f"HTTP {r.status_code}: {body}"}
         return r.json() if r.content else {}
-    except _http.ConnectionError as exc:
-        log.warning("Engine call %s %s — connection refused (engine not running?): %s", method, path, exc)
+    except _http.ConnectionError:
+        # Engine subprocess is not running — expected in standby mode.
+        # engine_monitor (main.py) owns up/down transition logging; suppress
+        # the per-call noise here so the console stays readable.
+        log.debug("Engine call %s %s — connection refused (engine not running)", method, path)
         return {"ok": False, "error": f"Connection refused — engine subprocess not reachable at {_ENGINE_LOCAL}{path}"}
-    except _http.Timeout as exc:
-        log.warning("Engine call %s %s — timed out after %.1fs: %s", method, path, timeout, exc)
+    except _http.Timeout:
+        log.debug("Engine call %s %s — timed out after %.1fs (engine not running?)", method, path, timeout)
         return {"ok": False, "error": f"Timeout after {timeout}s — engine not responding"}
     except Exception as exc:
-        log.warning("Engine call %s %s failed: %s (%s)", method, path, type(exc).__name__, exc)
+        log.warning("Engine call %s %s failed unexpectedly: %s (%s)", method, path, type(exc).__name__, exc)
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 

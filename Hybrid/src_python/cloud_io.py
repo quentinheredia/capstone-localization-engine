@@ -124,6 +124,7 @@ _CSV_HEADERS = _CSV_HEADERS_FULL
 _METHOD_CSV_CONFIG: Dict[str, tuple] = {
     "rssi": ("csv_trilat_log_path",  _CSV_HEADERS_FULL),    # trilateration
     "fp":   ("csv_finger_log_path",  _CSV_HEADERS_FINGER),  # fingerprinting
+    "gp":   ("csv_gp_log_path",      _CSV_HEADERS_FULL),    # Sparse GP
     "ble":  ("csv_ble_log_path",     _CSV_HEADERS_FULL),    # BLE (original headers)
     "tof":  ("csv_tof_log_path",     _CSV_HEADERS_FULL),    # Time-of-Flight
 }
@@ -131,6 +132,7 @@ _METHOD_CSV_CONFIG: Dict[str, tuple] = {
 _DEFAULT_CSV_PATHS: Dict[str, str] = {
     "rssi": "trilat_log.csv",
     "fp":   "finger_log.csv",
+    "gp":   "gp_log.csv",
     "ble":  "ble_log.csv",
     "tof":  "tof_log.csv",
 }

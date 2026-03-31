@@ -48,6 +48,9 @@ logging.basicConfig(
     format="%(asctime)s  %(levelname)-7s  %(name)s — %(message)s",
     datefmt="%H:%M:%S",
 )
+# Silence noisy third-party loggers (routine HTTP polling floods the console)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("watchfiles").setLevel(logging.WARNING)
 log = logging.getLogger("platform")
 
 # ─── Engine API URL (configurable so it works outside Docker Desktop too) ────
@@ -280,7 +283,7 @@ async def connectivity_poller() -> None:
     RETRY_INTERVAL    =   6.0   # 6 s between retries after first failure
     MAX_RETRIES       =   4     # 4 retries = 5 total attempts before "offline"
 
-    log.info("Connectivity poller started (baseline=%.0fs, retry=%ds×%d)",
+    log.info("Connectivity poller started (baseline=%.0fs, retry=%ds×%d) — pinging 'in_use' anchors only",
              BASELINE_INTERVAL, int(RETRY_INTERVAL), MAX_RETRIES)
 
     # Per-IP: number of consecutive failures (0 = last ping was OK)
@@ -309,6 +312,7 @@ async def connectivity_poller() -> None:
                     for row in db.query(Anchor.ip_address)
                                  .filter_by(enabled=True)
                                  .filter(Anchor.ip_address != "")
+                                 .filter(Anchor.device_status == "in_use")
                                  .all()
                 ]
             finally:
@@ -422,7 +426,12 @@ async def connectivity_poller() -> None:
         await asyncio.to_thread(_update_and_commit)
 
     # ── Main loop ─────────────────────────────────────────────────────────────
-    next_sweep_in = 0.0   # trigger immediately on startup
+    # Small startup delay so the watchdog and other tasks get a few event-loop
+    # cycles before the first anchor sweep hits the thread pool simultaneously
+    # with engine_monitor and survey_monitor.  Prevents the thundering-herd
+    # startup block that the watchdog detected as ~2.4 s.
+    await asyncio.sleep(2.0)
+    next_sweep_in = 0.0   # trigger first sweep right after the delay
 
     while True:
         try:
@@ -592,6 +601,10 @@ async def survey_monitor() -> None:
 
     log.info("Survey monitor started (interval=%.0fs)", CHECK_INTERVAL)
 
+    # Stagger startup — let connectivity_poller's 2s delay go first, then start
+    # survey polling 1s later so the first HTTP batches don't all land at once.
+    await asyncio.sleep(3.0)
+
     while True:
         try:
             r = await _http.get(f"http://localhost:{ENGINE_PORT}/survey/status")
@@ -701,7 +714,9 @@ async def engine_monitor() -> None:
         elif now_up and not _engine_up:
             # Transition: down → up
             downtime_s = int((now - _went_down_at).total_seconds()) if _went_down_at else "?"
-            _write_system_log("info",
+            await asyncio.to_thread(
+                _write_system_log,
+                "info",
                 f"Engine reconnected on port {ENGINE_PORT} (was unreachable for {downtime_s}s)",
                 {"port": ENGINE_PORT, "downtime_s": downtime_s, "event": "engine_reconnect",
                  "last_error": _last_error},
@@ -715,7 +730,9 @@ async def engine_monitor() -> None:
             # Transition: up → down — include raw error so the log shows *why*
             _went_down_at = now
             _last_error   = raw_error
-            _write_system_log("alert",
+            await asyncio.to_thread(
+                _write_system_log,
+                "alert",
                 f"Engine on port {ENGINE_PORT} became unreachable"
                 + (f" — {raw_error}" if raw_error else ""),
                 {"port": ENGINE_PORT, "event": "engine_disconnect", "raw_error": raw_error},
@@ -728,6 +745,207 @@ async def engine_monitor() -> None:
             _last_error = raw_error
 
         await asyncio.sleep(CHECK_INTERVAL)
+
+
+# ─── Background Task: Engine Log Forwarder ───────────────────────────────────
+
+# Cursor used for incremental scraping — ISO timestamp of last forwarded entry
+_engine_log_state: dict = {"last_ts": ""}
+
+
+def _write_engine_decision_log(level: str, message: str, meta: dict) -> None:
+    """Write a decision/engine event to EngineLog with source='engine'."""
+    try:
+        db = SessionLocal()
+        try:
+            db.add(EngineLog(
+                level=level,
+                tag_id=meta.get("device_id"),
+                source="engine",
+                message=message,
+                meta=meta,
+                timestamp=datetime.now(timezone.utc),
+            ))
+            db.commit()
+        finally:
+            db.close()
+    except Exception as exc:
+        log.warning("Failed to write engine decision log: %s", exc)
+
+
+async def engine_log_forwarder() -> None:
+    """
+    Every 5 s, scrape GET /logs from the engine and forward new entries to the
+    platform EngineLog DB (source='engine').  Uses ISO timestamp cursoring so
+    only unseen entries are written — no duplicates.
+
+    Engine log severity → EngineLog level mapping:
+        INFO  → "info"
+        WARN  → "warn"
+        ERROR → "alert"
+        (other) → "info"
+    """
+    INTERVAL = 5.0
+    _http = httpx.AsyncClient(timeout=5.0)
+    _sev_map = {"INFO": "info", "CONFIG": "config", "WARN": "warn",
+                "WARNING": "warn", "ERROR": "alert", "CRITICAL": "alert"}
+
+    log.info("Engine log forwarder started (interval=%.0fs)", INTERVAL)
+    await asyncio.sleep(20)   # wait for engine to fully start
+
+    while True:
+        try:
+            r = await _http.get(
+                f"http://localhost:{ENGINE_PORT}/logs",
+                params={"limit": 200},
+            )
+            if r.status_code == 200:
+                items = r.json().get("items", [])
+                # Only forward entries newer than our cursor
+                new_items = [
+                    e for e in items
+                    if e.get("timestamp", "") > _engine_log_state["last_ts"]
+                ]
+                if new_items:
+                    _engine_log_state["last_ts"] = max(
+                        e["timestamp"] for e in new_items
+                    )
+
+                    def _ingest(entries):
+                        db = SessionLocal()
+                        try:
+                            for e in entries:
+                                sev = e.get("severity", "INFO").upper()
+                                db.add(EngineLog(
+                                    level=_sev_map.get(sev, "info"),
+                                    tag_id=e.get("device_id") or None,
+                                    source="engine",
+                                    message=e.get("message", ""),
+                                    meta={"severity": sev,
+                                          "device_id": e.get("device_id")},
+                                    timestamp=datetime.now(timezone.utc),
+                                ))
+                            db.commit()
+                        finally:
+                            db.close()
+
+                    await asyncio.to_thread(_ingest, new_items)
+        except Exception:
+            pass   # engine not running — silent skip
+
+        await asyncio.sleep(INTERVAL)
+
+
+# ─── Background Task: Tag Presence Poller ────────────────────────────────────
+
+# Last known online/offline status per tag SSID (for transition logging)
+_tag_online: dict[str, str] = {}   # {ssid: "online" | "offline"}
+
+
+async def tag_poller() -> None:
+    """
+    Every 30 s, call GET /seen_ssids on the engine (which returns every SSID
+    visible in the last 120 s across all AP apscans) and update each enabled
+    tag's status in the database.
+
+    State changes are written to EngineLog (source='connectivity'):
+        "online"  → info
+        "offline" → warn
+    """
+    INTERVAL   = 30.0
+    MAX_AGE_S  = 120      # match the engine's default window
+    _http = httpx.AsyncClient(timeout=5.0)
+
+    log.info("Tag poller started (interval=%.0fs, max_age=%ds)", INTERVAL, MAX_AGE_S)
+    await asyncio.sleep(25)   # stagger after engine_log_forwarder startup
+
+    while True:
+        try:
+            r = await _http.get(
+                f"http://localhost:{ENGINE_PORT}/seen_ssids",
+                params={"max_age_s": MAX_AGE_S},
+            )
+            if r.status_code != 200:
+                await asyncio.sleep(INTERVAL)
+                continue
+
+            seen: dict = r.json().get("ssids", {})
+            now = datetime.now(timezone.utc)
+
+            def _update_tags():
+                db = SessionLocal()
+                try:
+                    tags = db.query(Tag).filter_by(enabled=True).all()
+                    for tag in tags:
+                        ssid = tag.ssid
+                        if not ssid:
+                            continue
+
+                        presence = seen.get(ssid)
+                        if presence:
+                            try:
+                                last_seen_dt = datetime.fromisoformat(
+                                    presence["last_seen"]
+                                )
+                                # Treat as online if seen within MAX_AGE_S
+                                is_online = (
+                                    (now - last_seen_dt).total_seconds() < MAX_AGE_S
+                                )
+                            except Exception:
+                                is_online = False
+                        else:
+                            is_online = False
+
+                        new_status = "online" if is_online else "offline"
+                        prev       = _tag_online.get(ssid)
+
+                        # Persist status change
+                        if new_status != (tag.status or "offline"):
+                            tag.status      = new_status
+                            tag.last_polled = now
+
+                        # Log on transition
+                        if prev is not None and prev != new_status:
+                            signals_str = ""
+                            if is_online and presence:
+                                sigs = presence.get("signals", {})
+                                signals_str = "  " + "  ".join(
+                                    f"{ap}:{rssi:+.0f}"
+                                    for ap, rssi in sorted(sigs.items())
+                                )
+                            level = "info" if is_online else "warn"
+                            msg = (
+                                f"Tag '{tag.name or ssid}' ({ssid}) came "
+                                f"{'ONLINE' if is_online else 'OFFLINE'}"
+                                + signals_str
+                            )
+                            db.add(EngineLog(
+                                level=level,
+                                tag_id=ssid,
+                                source="connectivity",
+                                message=msg,
+                                meta={
+                                    "ssid":     ssid,
+                                    "tag_id":   tag.tag_id,
+                                    "status":   new_status,
+                                    "signals":  (presence or {}).get("signals", {}),
+                                },
+                                timestamp=now,
+                            ))
+                            log.info("[tag_poller] %s", msg)
+
+                        _tag_online[ssid] = new_status
+
+                    db.commit()
+                finally:
+                    db.close()
+
+            await asyncio.to_thread(_update_tags)
+
+        except Exception as exc:
+            log.warning("Tag poller error: %s", exc)
+
+        await asyncio.sleep(INTERVAL)
 
 
 # ─── Lifespan ─────────────────────────────────────────────────────────────────
@@ -787,16 +1005,19 @@ async def lifespan(app: FastAPI):
         )
 
     # Start background tasks
-    watchdog_task = asyncio.create_task(_loop_watchdog(),      name="loop_watchdog")
-    poller_task   = asyncio.create_task(connectivity_poller(), name="connectivity_poller")
-    scope_task    = asyncio.create_task(scope_checker(),       name="scope_checker")
-    monitor_task  = asyncio.create_task(engine_monitor(),      name="engine_monitor")
-    survey_task   = asyncio.create_task(survey_monitor(),      name="survey_monitor")
+    watchdog_task   = asyncio.create_task(_loop_watchdog(),        name="loop_watchdog")
+    poller_task     = asyncio.create_task(connectivity_poller(),   name="connectivity_poller")
+    scope_task      = asyncio.create_task(scope_checker(),         name="scope_checker")
+    monitor_task    = asyncio.create_task(engine_monitor(),        name="engine_monitor")
+    survey_task     = asyncio.create_task(survey_monitor(),        name="survey_monitor")
+    log_fwd_task    = asyncio.create_task(engine_log_forwarder(),  name="engine_log_forwarder")
+    tag_poll_task   = asyncio.create_task(tag_poller(),            name="tag_poller")
 
     await asyncio.to_thread(
         _write_system_log,
         "info",
-        "Background tasks started — loop_watchdog, connectivity_poller, scope_checker, engine_monitor, survey_monitor",
+        "Background tasks started — loop_watchdog, connectivity_poller, scope_checker, "
+        "engine_monitor, survey_monitor, engine_log_forwarder, tag_poller",
         None,
     )
 
@@ -804,10 +1025,12 @@ async def lifespan(app: FastAPI):
 
     # ── Shutdown: cancel all background tasks ──────────────────────────────
     log.info("Shutting down background tasks...")
-    for task in (watchdog_task, poller_task, scope_task, monitor_task, survey_task):
+    for task in (watchdog_task, poller_task, scope_task, monitor_task,
+                 survey_task, log_fwd_task, tag_poll_task):
         task.cancel()
     await asyncio.gather(
-        watchdog_task, poller_task, scope_task, monitor_task, survey_task,
+        watchdog_task, poller_task, scope_task, monitor_task,
+        survey_task, log_fwd_task, tag_poll_task,
         return_exceptions=True,
     )
     log.info("All background tasks stopped.")
