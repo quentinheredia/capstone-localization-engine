@@ -10,25 +10,25 @@
         theme: {
           extend: {
             colors: {
-              ink:             "#dddde3",
+              ink: "#dddde3",
               "ink-secondary": "#8888a0",
-              panel:           "#1e1e24",
-              surface:         "#16161b",
-              "surface-dim":   "#111115",
-              accent:          "#ae5630",
-              "accent-dim":    "#944a29",
-              "accent-light":  "#ae563022",
-              success:         "#4ade80",
-              warn:            "#fbbf24",
-              danger:          "#f87171",
-              muted:           "#6b6b7b",
-              border:          "#2a2a33",
-              "border-dim":    "#222229",
+              panel: "#1e1e24",
+              surface: "#16161b",
+              "surface-dim": "#111115",
+              accent: "#ae5630",
+              "accent-dim": "#944a29",
+              "accent-light": "#ae563022",
+              success: "#4ade80",
+              warn: "#fbbf24",
+              danger: "#f87171",
+              muted: "#6b6b7b",
+              border: "#2a2a33",
+              "border-dim": "#222229",
               // ── Dark chrome (title bar — slightly darker than surface) ─
-              chrome:          "#0e0e12",
+              chrome: "#0e0e12",
               "chrome-border": "#222229",
-              "chrome-tab":    "#16161b",
-              "chrome-text":   "#666676",
+              "chrome-tab": "#16161b",
+              "chrome-text": "#666676",
               "chrome-active": "#dddde3",
             },
           },
@@ -109,7 +109,10 @@
       }
     </style>
   </head>
-  <body class="bg-surface text-ink min-h-screen antialiased" style="color-scheme: dark;">
+  <body
+    class="bg-surface text-ink min-h-screen antialiased"
+    style="color-scheme: dark"
+  >
     <div id="root"></div>
 
     <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
@@ -229,8 +232,7 @@
           api(PLATFORM_API, `/tags/${id}`, { method: "DELETE" }),
         updateTag: (id, d) =>
           api(PLATFORM_API, `/tags/${id}`, { method: "PATCH", body: d }),
-        pollTagsNow: () =>
-          api(PLATFORM_API, "/tags/poll", { method: "POST" }),
+        pollTagsNow: () => api(PLATFORM_API, "/tags/poll", { method: "POST" }),
         // Logs
         listCrossings: (p) => api(PLATFORM_API, "/crossings", { params: p }),
         listAlerts: (p) => api(PLATFORM_API, "/alerts", { params: p }),
@@ -373,14 +375,17 @@
 
       function Badge({ color = "gray", children }) {
         const colors = {
-          green: "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30",
+          green:
+            "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30",
           red: "bg-red-500/15 text-red-400 border border-red-500/30",
           yellow: "bg-amber-500/10 text-amber-400 border border-amber-500/30",
           blue: "bg-sky-500/10 text-sky-400 border border-sky-500/30",
           gray: "bg-surface-dim text-ink-secondary border border-border",
-          purple: "bg-violet-500/15 text-violet-400 border border-violet-500/30",
+          purple:
+            "bg-violet-500/15 text-violet-400 border border-violet-500/30",
           teal: "bg-teal-500/15 text-teal-400 border border-teal-500/30",
-          orange: "bg-orange-500/15 text-orange-400 border border-orange-500/30",
+          orange:
+            "bg-orange-500/15 text-orange-400 border border-orange-500/30",
         };
         return h(
           "span",
@@ -679,7 +684,11 @@
               consecutiveFailures.current = 0;
             }
 
-            if (!isUp && consecutiveFailures.current >= FAILURES_TO_DOWN && !wasDownRef.current) {
+            if (
+              !isUp &&
+              consecutiveFailures.current >= FAILURES_TO_DOWN &&
+              !wasDownRef.current
+            ) {
               // Transition: up → down (only after FAILURES_TO_DOWN consecutive misses)
 
               wasDownRef.current = true;
@@ -767,27 +776,49 @@
       // ─── NAV / LAYOUT ────────────────────────────────────────────────────
 
       const PAGES = [
-        { id: "wizard", label: "Setup", icon: "\u2699\uFE0F" },
-        { id: "localize", label: "Localization", icon: "\uD83C\uDFF7\uFE0F" },
-        { id: "survey", label: "Survey", icon: "\uD83D\uDCCD" },
-        { id: "map", label: "Map", icon: "\uD83D\uDDFA\uFE0F" },
-        { id: "devices", label: "Devices", icon: "\uD83D\uDCE1" },
-        { id: "logs", label: "Logs", icon: "\uD83D\uDCCB" },
+        { id: "wizard",    label: "Setup",          icon: "\u2699\uFE0F" },
+        { id: "localize",  label: "Localization",   icon: "\uD83C\uDFF7\uFE0F" },
+        { id: "survey",    label: "Survey",          icon: "\uD83D\uDCCD" },
+        { id: "map",       label: "Map",             icon: "\uD83D\uDDFA\uFE0F" },
+        { id: "devices",   label: "Devices",         icon: "\uD83D\uDCE1" },
+        { id: "logs",      label: "Logs",            icon: "\uD83D\uDCCB" },
+        { id: "espflash",  label: "Flash ESP",       icon: "\u26A1" },
       ];
 
       // ── SVG icon helpers ────────────────────────────────────────────────────
       const IconMinimize = () =>
-        h("svg", { width: 11, height: 11, viewBox: "0 0 11 11", fill: "currentColor" },
+        h(
+          "svg",
+          { width: 11, height: 11, viewBox: "0 0 11 11", fill: "currentColor" },
           h("rect", { x: 0, y: 5, width: 11, height: 1 }),
         );
 
       const IconMaximize = () =>
-        h("svg", { width: 11, height: 11, viewBox: "0 0 11 11", fill: "none", stroke: "currentColor", strokeWidth: 1 },
+        h(
+          "svg",
+          {
+            width: 11,
+            height: 11,
+            viewBox: "0 0 11 11",
+            fill: "none",
+            stroke: "currentColor",
+            strokeWidth: 1,
+          },
           h("rect", { x: 0.5, y: 0.5, width: 10, height: 10 }),
         );
 
       const IconClose = () =>
-        h("svg", { width: 11, height: 11, viewBox: "0 0 11 11", fill: "none", stroke: "currentColor", strokeWidth: 1.2, strokeLinecap: "round" },
+        h(
+          "svg",
+          {
+            width: 11,
+            height: 11,
+            viewBox: "0 0 11 11",
+            fill: "none",
+            stroke: "currentColor",
+            strokeWidth: 1.2,
+            strokeLinecap: "round",
+          },
           h("line", { x1: 0.5, y1: 0.5, x2: 10.5, y2: 10.5 }),
           h("line", { x1: 10.5, y1: 0.5, x2: 0.5, y2: 10.5 }),
         );
@@ -795,49 +826,79 @@
       // ── Top chrome bar ───────────────────────────────────────────────────────
       function TopBar({ page, setPage, engineHealth }) {
         const winCtrl = (label, icon, onClick, extraClass = "") =>
-          h("button", {
-            className: `no-drag h-full w-11 flex items-center justify-center text-chrome-text transition-colors duration-100 hover:bg-white/10 hover:text-chrome-active ${extraClass}`,
-            onClick,
-            title: label,
-          }, h(icon));
+          h(
+            "button",
+            {
+              className: `no-drag h-full w-11 flex items-center justify-center text-chrome-text transition-colors duration-100 hover:bg-white/10 hover:text-chrome-active ${extraClass}`,
+              onClick,
+              title: label,
+            },
+            h(icon),
+          );
 
-        return h("header", {
-          className: "drag-region h-10 bg-chrome flex items-center border-b border-chrome-border select-none shrink-0",
-          style: { zIndex: 50 },
-        },
+        return h(
+          "header",
+          {
+            className:
+              "drag-region h-10 bg-chrome flex items-center border-b border-chrome-border select-none shrink-0",
+            style: { zIndex: 50 },
+          },
           // ── Left: wordmark ──────────────────────────────────────────────
-          h("div", { className: "no-drag flex items-center pl-3 pr-4 gap-2 h-full" },
-            h("span", {
-              className: "text-chrome-active text-[13px] font-semibold tracking-tight",
-              style: { fontFamily: "'Crimson Pro', Georgia, serif" },
-            }, "IPS Platform"),
-            h("span", { className: "text-chrome-text text-[10px] tracking-widest uppercase" },
-              "v1"),
+          h(
+            "div",
+            { className: "no-drag flex items-center pl-3 pr-4 gap-2 h-full" },
+            h(
+              "span",
+              {
+                className:
+                  "text-chrome-active text-[13px] font-semibold tracking-tight",
+                style: { fontFamily: "'Crimson Pro', Georgia, serif" },
+              },
+              "IPS Platform",
+            ),
+            h(
+              "span",
+              {
+                className:
+                  "text-chrome-text text-[10px] tracking-widest uppercase",
+              },
+              "v1",
+            ),
           ),
 
           // ── Divider ─────────────────────────────────────────────────────
           h("div", { className: "w-px h-5 bg-chrome-border mr-3" }),
 
           // ── Nav tabs ────────────────────────────────────────────────────
-          h("nav", { className: "no-drag flex items-center gap-0.5 h-full" },
+          h(
+            "nav",
+            { className: "no-drag flex items-center gap-0.5 h-full" },
             PAGES.map((p) =>
-              h("button", {
-                key: p.id,
-                onClick: () => setPage(p.id),
-                className: `h-full px-3.5 text-[12px] font-medium transition-all duration-100 relative ${
-                  page === p.id
-                    ? "text-chrome-active"
-                    : "text-chrome-text hover:text-chrome-active hover:bg-white/5"
-                }`,
-              },
+              h(
+                "button",
+                {
+                  key: p.id,
+                  onClick: () => setPage(p.id),
+                  className: `h-full px-3.5 text-[12px] font-medium transition-all duration-100 relative ${
+                    page === p.id
+                      ? "text-chrome-active"
+                      : "text-chrome-text hover:text-chrome-active hover:bg-white/5"
+                  }`,
+                },
                 p.label,
                 // active underline
-                page === p.id && h("span", {
-                  style: {
-                    position: "absolute", bottom: 0, left: 8, right: 8, height: 2,
-                    background: "#ae5630", borderRadius: "1px 1px 0 0",
-                  },
-                }),
+                page === p.id &&
+                  h("span", {
+                    style: {
+                      position: "absolute",
+                      bottom: 0,
+                      left: 8,
+                      right: 8,
+                      height: 2,
+                      background: "#ae5630",
+                      borderRadius: "1px 1px 0 0",
+                    },
+                  }),
               ),
             ),
           ),
@@ -846,13 +907,19 @@
           h("div", { className: "flex-1" }),
 
           // ── Engine status pill ──────────────────────────────────────────
-          h("div", { className: "no-drag flex items-center gap-1.5 px-3 text-[11px]" },
+          h(
+            "div",
+            { className: "no-drag flex items-center gap-1.5 px-3 text-[11px]" },
             h("span", {
               className: `inline-block w-1.5 h-1.5 rounded-full ${engineHealth?.ok ? "bg-green-500" : "bg-red-500"}`,
             }),
-            h("span", { className: "text-chrome-text" },
+            h(
+              "span",
+              { className: "text-chrome-text" },
               engineHealth?.ok
-                ? (engineHealth?.poll_running ? "Engine · polling" : "Engine · ready")
+                ? engineHealth?.poll_running
+                  ? "Engine · polling"
+                  : "Engine · ready"
                 : "Engine · offline",
             ),
           ),
@@ -861,13 +928,18 @@
           h("div", { className: "w-px h-5 bg-chrome-border ml-1" }),
 
           // ── Window controls ─────────────────────────────────────────────
-          winCtrl("Minimize", IconMinimize,
-            () => window.pywebview?.api?.minimize_window?.()),
-          winCtrl("Maximize", IconMaximize,
-            () => window.pywebview?.api?.toggle_maximize?.()),
-          winCtrl("Close", IconClose,
+          winCtrl("Minimize", IconMinimize, () =>
+            window.pywebview?.api?.minimize_window?.(),
+          ),
+          winCtrl("Maximize", IconMaximize, () =>
+            window.pywebview?.api?.toggle_maximize?.(),
+          ),
+          winCtrl(
+            "Close",
+            IconClose,
             () => window.pywebview?.api?.close_window?.(),
-            "hover:!bg-red-600 hover:!text-white"),
+            "hover:!bg-red-600 hover:!text-white",
+          ),
         );
       }
 
@@ -879,18 +951,34 @@
         downtimeLabel,
         children,
       }) {
-        return h("div", { className: "flex flex-col h-screen" },
+        return h(
+          "div",
+          { className: "flex flex-col h-screen" },
           h(TopBar, { page, setPage, engineHealth }),
           // Backend-down banner
-          platformDown && h("div", {
-            className: "flex items-center gap-3 bg-red-600 text-white px-6 py-2 text-sm font-medium shrink-0",
-          },
-            h("span", { className: "text-base" }, "⚠"),
-            h("span", null, `Platform backend unreachable — disconnected for ${downtimeLabel}`),
-            h("span", { className: "ml-auto text-red-200 text-xs" }, "Retrying every 5s…"),
-          ),
+          platformDown &&
+            h(
+              "div",
+              {
+                className:
+                  "flex items-center gap-3 bg-red-600 text-white px-6 py-2 text-sm font-medium shrink-0",
+              },
+              h("span", { className: "text-base" }, "⚠"),
+              h(
+                "span",
+                null,
+                `Platform backend unreachable — disconnected for ${downtimeLabel}`,
+              ),
+              h(
+                "span",
+                { className: "ml-auto text-red-200 text-xs" },
+                "Retrying every 5s…",
+              ),
+            ),
           // Page content
-          h("main", { className: "flex-1 overflow-y-auto bg-surface" },
+          h(
+            "main",
+            { className: "flex-1 overflow-y-auto bg-surface" },
             h("div", { className: "max-w-6xl mx-auto px-8 py-8" }, children),
           ),
         );
@@ -5180,11 +5268,7 @@
                     h(
                       "div",
                       null,
-                      h(
-                        "div",
-                        { className: "text-muted mb-0.5" },
-                        "stdout:",
-                      ),
+                      h("div", { className: "text-muted mb-0.5" }, "stdout:"),
                       h(
                         "pre",
                         {
@@ -5198,11 +5282,7 @@
                     h(
                       "div",
                       null,
-                      h(
-                        "div",
-                        { className: "text-muted mb-0.5" },
-                        "stderr:",
-                      ),
+                      h("div", { className: "text-muted mb-0.5" }, "stderr:"),
                       h(
                         "pre",
                         {
@@ -6191,7 +6271,17 @@
         tof: {
           label: "ToF",
           color: "orange",
-          desc: "Time-of-Flight ranging via MQTT. Requires ToF anchors reporting on MQTT broker.",
+          desc: "Time-of-Flight trilateration from ESP32-S3 FTM ranging. Raw ranges arrive over MQTT; the engine runs least-squares positioning server-side.",
+        },
+        raw: {
+          label: "Raw Trilat",
+          color: "red",
+          desc: "Trilateration on unfiltered raw RSSI — no smoothing applied. Use as a noise baseline for comparing filter performance.",
+        },
+        kalman: {
+          label: "Kalman Trilat",
+          color: "cyan",
+          desc: "Trilateration with per-channel scalar Kalman filter. Adaptive gain tracks signal changes faster than SMA while suppressing Gaussian noise.",
         },
       };
 
@@ -6526,9 +6616,11 @@
 
         // Registered tags from the platform DB (for SSID combo suggestions)
         const { data: tagsData } = useApi(() =>
-          platform.listTags({ limit: 200 }).catch(() => null)
+          platform.listTags({ limit: 200 }).catch(() => null),
         );
-        const _tagsList = Array.isArray(tagsData) ? tagsData : (tagsData?.items ?? []);
+        const _tagsList = Array.isArray(tagsData)
+          ? tagsData
+          : (tagsData?.items ?? []);
         const registeredTagSsids = _tagsList
           .map((t) => ({ ssid: t.ssid, label: t.name || t.tag_id }))
           .filter((t) => t.ssid);
@@ -6717,7 +6809,10 @@
             showDebug &&
               h(
                 "div",
-                { className: "font-mono text-xs space-y-1 bg-surface rounded p-2" },
+                {
+                  className:
+                    "font-mono text-xs space-y-1 bg-surface rounded p-2",
+                },
                 _tagsList.length > 0
                   ? h(
                       React.Fragment,
@@ -6728,12 +6823,16 @@
                           "div",
                           {
                             key: t.tag_id,
-                            className: t.ssid ? "text-emerald-400" : "text-red-400",
+                            className: t.ssid
+                              ? "text-emerald-400"
+                              : "text-red-400",
                           },
                           `• ${t.tag_id} | name="${t.name || "—"}" | ssid="${t.ssid || "—"}" | enabled=${t.enabled}`,
                         ),
                       ),
-                      h("div", { className: "border-t border-border mt-1 pt-1" }),
+                      h("div", {
+                        className: "border-t border-border mt-1 pt-1",
+                      }),
                       h(
                         "div",
                         null,
@@ -6907,18 +7006,30 @@
                       "w-full px-3 py-1.5 text-sm rounded-md border border-border bg-surface focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-50",
                   },
                   [
-                    h("option", { key: "__blank", value: "" }, "— Select a target SSID —"),
+                    h(
+                      "option",
+                      { key: "__blank", value: "" },
+                      "— Select a target SSID —",
+                    ),
                     // Registered tags
                     ...registeredTagSsids.map((t) =>
-                      h("option", { key: `tag-${t.ssid}`, value: t.ssid },
-                        t.label && t.label !== t.ssid ? `${t.label} (${t.ssid})` : t.ssid,
-                      )
+                      h(
+                        "option",
+                        { key: `tag-${t.ssid}`, value: t.ssid },
+                        t.label && t.label !== t.ssid
+                          ? `${t.label} (${t.ssid})`
+                          : t.ssid,
+                      ),
                     ),
                     // Any configured targets not already listed
                     ...targets
-                      .filter((s) => !registeredTagSsids.some((t) => t.ssid === s))
-                      .map((s) => h("option", { key: `cfg-${s}`, value: s }, s)),
-                  ]
+                      .filter(
+                        (s) => !registeredTagSsids.some((t) => t.ssid === s),
+                      )
+                      .map((s) =>
+                        h("option", { key: `cfg-${s}`, value: s }, s),
+                      ),
+                  ],
                 ),
                 h(
                   "p",
@@ -7208,30 +7319,31 @@
                               ),
                           ),
                           // Inspect vectors button
-                        h(
-                          "button",
-                          {
-                            onClick: async () => {
-                              setViewingRoom(room);
-                              setRoomVectors(null);
-                              setVectorsLoading(true);
-                              try {
-                                const data = await engine.surveyRoomVectors(room);
-                                setRoomVectors(data);
-                              } catch (e) {
-                                setRoomVectors({ error: String(e) });
-                              } finally {
-                                setVectorsLoading(false);
-                              }
+                          h(
+                            "button",
+                            {
+                              onClick: async () => {
+                                setViewingRoom(room);
+                                setRoomVectors(null);
+                                setVectorsLoading(true);
+                                try {
+                                  const data =
+                                    await engine.surveyRoomVectors(room);
+                                  setRoomVectors(data);
+                                } catch (e) {
+                                  setRoomVectors({ error: String(e) });
+                                } finally {
+                                  setVectorsLoading(false);
+                                }
+                              },
+                              title: "Inspect stored RSSI vectors",
+                              className:
+                                "text-xs px-2 py-1 rounded text-sky-400 hover:bg-sky-500/15 transition-colors opacity-0 group-hover:opacity-100",
                             },
-                            title: "Inspect stored RSSI vectors",
-                            className:
-                              "text-xs px-2 py-1 rounded text-sky-400 hover:bg-sky-500/15 transition-colors opacity-0 group-hover:opacity-100",
-                          },
-                          "🔍",
-                        ),
-                        // Delete button
-                        h(
+                            "🔍",
+                          ),
+                          // Delete button
+                          h(
                             "button",
                             {
                               onClick: () => handleDeleteRoom(room),
@@ -7310,12 +7422,15 @@
                       { className: "font-semibold text-ink text-sm" },
                       `RSSI Vectors — ${viewingRoom}`,
                     ),
-                    !vectorsLoading && roomVectors && !roomVectors.error &&
+                    !vectorsLoading &&
+                      roomVectors &&
+                      !roomVectors.error &&
                       h(
                         "p",
                         { className: "text-xs text-muted mt-0.5" },
                         `${roomVectors.count} sample${roomVectors.count !== 1 ? "s" : ""}`,
-                        roomVectors.averages && Object.keys(roomVectors.averages).length > 0 &&
+                        roomVectors.averages &&
+                          Object.keys(roomVectors.averages).length > 0 &&
                           ` · averages: ${Object.entries(roomVectors.averages)
                             .sort(([a], [b]) => a.localeCompare(b))
                             .map(([ap, v]) => `${ap}: ${v > 0 ? "+" : ""}${v}`)
@@ -7351,7 +7466,9 @@
                       { className: "text-red-400 text-sm p-2" },
                       roomVectors.error,
                     ),
-                  !vectorsLoading && roomVectors && !roomVectors.error &&
+                  !vectorsLoading &&
+                    roomVectors &&
+                    !roomVectors.error &&
                     h(
                       "div",
                       { className: "space-y-1.5" },
@@ -8364,8 +8481,14 @@
                           { className: "py-3 px-3" },
                           h(
                             Badge,
-                            { color: (METHOD_INFO[c.localization_method] || {}).color || "blue" },
-                            (METHOD_INFO[c.localization_method] || {}).label || c.localization_method || "rssi",
+                            {
+                              color:
+                                (METHOD_INFO[c.localization_method] || {})
+                                  .color || "blue",
+                            },
+                            (METHOD_INFO[c.localization_method] || {}).label ||
+                              c.localization_method ||
+                              "rssi",
                           ),
                         ),
                         h(
@@ -8677,7 +8800,8 @@
                           h(
                             "span",
                             {
-                              className: "text-ink-secondary shrink-0 w-24 truncate",
+                              className:
+                                "text-ink-secondary shrink-0 w-24 truncate",
                             },
                             l.source || "",
                           ),
@@ -8717,6 +8841,255 @@
       }
 
       // ═════════════════════════════════════════════════════════════════════
+      // ESP FLASH PAGE
+      // ═════════════════════════════════════════════════════════════════════
+
+      function EspFlashPage() {
+        const PLATFORM_API = window.PLATFORM_API || "http://localhost:8000";
+
+        const [ports, setPorts]             = useState([]);
+        const [portsError, setPortsError]   = useState(null);
+        const [deviceType, setDeviceType]   = useState("anchor");
+        const [deviceNum, setDeviceNum]     = useState(0);
+        const [serialPort, setSerialPort]   = useState("");
+        const [wifiSsid, setWifiSsid]       = useState("EAP1250");
+        const [wifiPass, setWifiPass]       = useState("");
+        const [brokerUri, setBrokerUri]     = useState("mqtt://192.168.100.10:1883");
+        const [locationId, setLocationId]   = useState("lab_1");
+        const [floorId, setFloorId]         = useState("floor_1");
+        const [anchorX, setAnchorX]         = useState(0);
+        const [anchorY, setAnchorY]         = useState(0);
+        const [apChannel, setApChannel]     = useState(6);
+        const [tagChannel, setTagChannel]   = useState(1);
+        const [logLines, setLogLines]       = useState([]);
+        const [running, setRunning]         = useState(false);
+        const [result, setResult]           = useState(null);   // "ok" | "error"
+        const logRef = useRef(null);
+
+        // Scroll log to bottom whenever it grows
+        useEffect(() => {
+          if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+        }, [logLines]);
+
+        // Load serial ports on mount
+        useEffect(() => {
+          fetch(`${PLATFORM_API}/api/v1/esp/ports`)
+            .then(r => r.json())
+            .then(d => {
+              setPorts(d.ports || []);
+              if (d.ports && d.ports.length > 0) setSerialPort(d.ports[0].port);
+            })
+            .catch(e => setPortsError(String(e)));
+        }, []);
+
+        function startFlash() {
+          setLogLines([]);
+          setResult(null);
+          setRunning(true);
+
+          const body = {
+            device_type:     deviceType,
+            device_num:      parseInt(deviceNum),
+            serial_port:     serialPort,
+            wifi_ssid:       wifiSsid,
+            wifi_pass:       wifiPass,
+            mqtt_broker_uri: brokerUri,
+            location_id:     locationId,
+            floor_id:        floorId,
+            anchor_x_cm:     parseInt(anchorX),
+            anchor_y_cm:     parseInt(anchorY),
+            ap_channel:      parseInt(apChannel),
+            tag_ap_channel:  parseInt(tagChannel),
+          };
+
+          fetch(`${PLATFORM_API}/api/v1/esp/flash`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          })
+          .then(r => {
+            if (!r.ok) return r.json().then(d => { throw new Error(d.detail || "Flash failed"); });
+            // Connect to SSE stream
+            const es = new EventSource(`${PLATFORM_API}/api/v1/esp/flash/stream`);
+            es.onmessage = (e) => {
+              setLogLines(prev => [...prev, e.data]);
+            };
+            es.addEventListener("close", () => {
+              es.close();
+              setRunning(false);
+            });
+            es.onerror = () => {
+              es.close();
+              setRunning(false);
+              setResult("error");
+            };
+          })
+          .catch(e => {
+            setLogLines(prev => [...prev, `ERROR: ${e.message}`]);
+            setRunning(false);
+            setResult("error");
+          });
+        }
+
+        function cancelFlash() {
+          fetch(`${PLATFORM_API}/api/v1/esp/flash/cancel`, { method: "POST" });
+          setRunning(false);
+          setResult("error");
+        }
+
+        const inputCls = "w-full border border-border rounded px-2 py-1.5 text-sm bg-surface text-foreground";
+        const labelCls = "block text-xs font-medium text-muted mb-1";
+
+        return h("div", { className: "max-w-3xl mx-auto space-y-6 p-4" },
+
+          // Header
+          h("div", null,
+            h("h1", { className: "text-xl font-bold text-foreground" }, "⚡ ESP32 Flash Tool"),
+            h("p", { className: "text-sm text-muted mt-1" },
+              "Generate device_config.h, build firmware with idf.py, and flash over USB-serial. ",
+              "Ensure the ESP-IDF export script has been sourced (", h("code", { className: "text-xs bg-surface-2 px-1 rounded" }, ". $IDF_PATH/export.sh"), ") before starting."
+            )
+          ),
+
+          // Network connectivity note
+          h("div", { className: "rounded border border-orange-500/30 bg-orange-500/10 p-3 text-sm text-orange-300" },
+            h("strong", null, "Server reachability: "),
+            "Set MQTT Broker URI to the IP address of this server on the WiFi network the ESP will join. ",
+            "The ESP32 STA interface must be able to reach the broker at that address."
+          ),
+
+          // Form
+          h(Card, { title: "Device Configuration" },
+            h("div", { className: "grid grid-cols-2 gap-4" },
+
+              // Device type
+              h("div", null,
+                h("label", { className: labelCls }, "Device Type"),
+                h("select", { value: deviceType, onChange: e => setDeviceType(e.target.value), className: inputCls },
+                  h("option", { value: "anchor" }, "Anchor"),
+                  h("option", { value: "tag" }, "Tag"),
+                )
+              ),
+
+              // Device number
+              h("div", null,
+                h("label", { className: labelCls }, deviceType === "anchor" ? "Anchor ID" : "Tag Number"),
+                h("input", { type: "number", min: 0, max: 99, value: deviceNum,
+                  onChange: e => setDeviceNum(e.target.value), className: inputCls })
+              ),
+
+              // Serial port
+              h("div", null,
+                h("label", { className: labelCls }, "Serial Port"),
+                portsError
+                  ? h("input", { type: "text", value: serialPort, onChange: e => setSerialPort(e.target.value),
+                      placeholder: "/dev/ttyUSB0 or COM3", className: inputCls })
+                  : h("select", { value: serialPort, onChange: e => setSerialPort(e.target.value), className: inputCls },
+                      ports.length === 0
+                        ? h("option", { value: "" }, "No ports detected")
+                        : ports.map(p => h("option", { key: p.port, value: p.port }, `${p.port} — ${p.description}`))
+                    )
+              ),
+
+              // Refresh ports
+              h("div", { className: "flex items-end" },
+                h("button", {
+                  onClick: () => {
+                    fetch(`${PLATFORM_API}/api/v1/esp/ports`)
+                      .then(r => r.json())
+                      .then(d => { setPorts(d.ports || []); setPortsError(null); })
+                      .catch(e => setPortsError(String(e)));
+                  },
+                  className: "w-full py-1.5 text-sm border border-border rounded hover:bg-surface-2 text-muted"
+                }, "↺ Refresh Ports")
+              ),
+
+              // WiFi SSID
+              h("div", null,
+                h("label", { className: labelCls }, "WiFi SSID (STA network)"),
+                h("input", { type: "text", value: wifiSsid, onChange: e => setWifiSsid(e.target.value), className: inputCls })
+              ),
+
+              // WiFi password
+              h("div", null,
+                h("label", { className: labelCls }, "WiFi Password (leave blank for open)"),
+                h("input", { type: "password", value: wifiPass, onChange: e => setWifiPass(e.target.value),
+                  placeholder: "open network", className: inputCls })
+              ),
+
+              // MQTT Broker URI — full width
+              h("div", { className: "col-span-2" },
+                h("label", { className: labelCls }, "MQTT Broker URI (server IP on the WiFi network)"),
+                h("input", { type: "text", value: brokerUri, onChange: e => setBrokerUri(e.target.value), className: inputCls })
+              ),
+
+              // Location / Floor
+              h("div", null,
+                h("label", { className: labelCls }, "Location ID"),
+                h("input", { type: "text", value: locationId, onChange: e => setLocationId(e.target.value), className: inputCls })
+              ),
+              h("div", null,
+                h("label", { className: labelCls }, "Floor ID"),
+                h("input", { type: "text", value: floorId, onChange: e => setFloorId(e.target.value), className: inputCls })
+              ),
+
+              // Anchor-specific fields
+              deviceType === "anchor" && h(React.Fragment, null,
+                h("div", null,
+                  h("label", { className: labelCls }, "Anchor X position (cm)"),
+                  h("input", { type: "number", value: anchorX, onChange: e => setAnchorX(e.target.value), className: inputCls })
+                ),
+                h("div", null,
+                  h("label", { className: labelCls }, "Anchor Y position (cm)"),
+                  h("input", { type: "number", value: anchorY, onChange: e => setAnchorY(e.target.value), className: inputCls })
+                ),
+                h("div", null,
+                  h("label", { className: labelCls }, "AP Channel (all anchors must match)"),
+                  h("input", { type: "number", min: 1, max: 13, value: apChannel, onChange: e => setApChannel(e.target.value), className: inputCls })
+                ),
+              ),
+
+              // Tag-specific fields
+              deviceType === "tag" && h("div", null,
+                h("label", { className: labelCls }, "Tag AP Channel"),
+                h("input", { type: "number", min: 1, max: 13, value: tagChannel, onChange: e => setTagChannel(e.target.value), className: inputCls })
+              ),
+            ),
+
+            // Actions
+            h("div", { className: "flex gap-3 mt-4" },
+              h("button", {
+                onClick: startFlash,
+                disabled: running || !serialPort,
+                className: `px-4 py-2 text-sm rounded font-medium ${running || !serialPort
+                  ? "bg-surface-2 text-muted cursor-not-allowed"
+                  : "bg-accent text-white hover:opacity-90"}`
+              }, running ? "⏳ Building & Flashing…" : "⚡ Build + Flash"),
+
+              running && h("button", {
+                onClick: cancelFlash,
+                className: "px-4 py-2 text-sm rounded border border-red-500/50 text-red-400 hover:bg-red-500/10"
+              }, "✕ Cancel"),
+            )
+          ),
+
+          // Log output
+          h(Card, { title: "Build / Flash Log" },
+            result === "ok" && h("div", { className: "mb-2 text-sm text-green-400 font-medium" }, "✓ Flash succeeded"),
+            result === "error" && h("div", { className: "mb-2 text-sm text-red-400 font-medium" }, "✗ Flash failed — see log above"),
+            h("pre", {
+              ref: logRef,
+              className: "h-80 overflow-y-auto text-xs text-muted font-mono bg-surface-2 rounded p-3 whitespace-pre-wrap"
+            },
+              logLines.length === 0
+                ? "(output will appear here once flashing starts)"
+                : logLines.join("\n")
+            )
+          )
+        );
+      }
+
+      // ═════════════════════════════════════════════════════════════════════
       // APP ROOT
       // ═════════════════════════════════════════════════════════════════════
 
@@ -8730,12 +9103,13 @@
         return h(
           Layout,
           { page, setPage, engineHealth },
-          page === "wizard"   && h(SetupWizard),
-          page === "localize" && h(LocalizationPage),
-          page === "survey"   && h(SurveyPage),
-          page === "map"      && h(MapView),
-          page === "devices"  && h(DeviceTables),
-          page === "logs"     && h(LogsPage),
+          page === "wizard"    && h(SetupWizard),
+          page === "localize"  && h(LocalizationPage),
+          page === "survey"    && h(SurveyPage),
+          page === "map"       && h(MapView),
+          page === "devices"   && h(DeviceTables),
+          page === "logs"      && h(LogsPage),
+          page === "espflash"  && h(EspFlashPage),
         );
       }
 

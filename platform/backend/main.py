@@ -42,6 +42,7 @@ from api.devices import router as devices_router
 from api.logs import router as logs_router
 from api.config import router as config_router
 from api.floorplan_editor import router as floorplan_editor_router
+from api.esp_flash import router as esp_flash_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -1053,6 +1054,7 @@ app.include_router(devices_router)
 app.include_router(logs_router)
 app.include_router(config_router)
 app.include_router(floorplan_editor_router)
+app.include_router(esp_flash_router)
 
 
 @app.get("/health")
