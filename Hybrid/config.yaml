@@ -11,8 +11,8 @@ system:
   testing_mode: false
   methods:
   - trilateration
-  - fingerprinting
-  - gp
+  - raw
+  - kalman
 telemetry_config:
   edge_campus_id: Carleton University
   edge_building_id: Canal Building

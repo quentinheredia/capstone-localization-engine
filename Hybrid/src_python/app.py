@@ -48,7 +48,10 @@ from models import (
     LocalizationDecision,
     select_location,
 )
-from engine_wrappers import RSSIEngineWrapper, FingerprintWrapper, SGPWrapper
+from engine_wrappers import (
+    RSSIEngineWrapper, RawRSSIEngineWrapper, KalmanRSSIEngineWrapper,
+    FingerprintWrapper, SGPWrapper, ToFWrapper,
+)
 from data_pipes import TelnetPipe, MQTTPipe
 import cloud_io
 
@@ -137,15 +140,20 @@ _state: Dict[str, Any] = {
     "cfg_error":     None,
     "env":           None,   # FloorEnvironment
     # Per-method decision rings
-    "rssi_decisions": [],    # trilateration verdicts
-    "fp_decisions":   [],    # fingerprinting verdicts
-    "gp_decisions":   [],    # Sparse GP verdicts
-    "ble_decisions":  [],    # BLE (stub — populated externally)
-    "tof_decisions":  [],    # ToF (stub — populated externally)
+    "rssi_decisions":   [],    # trilateration + SMA verdicts
+    "raw_decisions":    [],    # trilateration + NO filter verdicts
+    "kalman_decisions": [],    # trilateration + Kalman filter verdicts
+    "fp_decisions":     [],    # fingerprinting verdicts
+    "gp_decisions":     [],    # Sparse GP verdicts
+    "ble_decisions":    [],    # BLE (stub — populated externally)
+    "tof_decisions":    [],    # ToF trilateration verdicts
     # Latest position per device per method
-    "rssi_positions": {},
-    "fp_positions":   {},
-    "gp_positions":   {},
+    "rssi_positions":    {},
+    "raw_positions":     {},
+    "kalman_positions":  {},
+    "fp_positions":      {},
+    "gp_positions":      {},
+    "tof_positions":     {},
     "device_status": {},     # {device_id: {reachable, last_scan}}
     "raw":           None,   # last RawSnapshot dict
     "logs":          [],     # List[{timestamp, severity, device_id, message}]
@@ -341,6 +349,31 @@ async def _poll_loop() -> None:
         log.error(_msg); _append_log("ERROR", "", _msg)
         _state["poll_running"] = False; return
 
+    # Raw trilateration wrapper (no RSSI filter, pure baseline)
+    try:
+        raw_wrapper = RawRSSIEngineWrapper(env, cfg)
+        _msg = "Raw trilateration enabled (no RSSI filtering — baseline)"
+        log.config(_msg); _append_log("CONFIG", "", _msg)
+    except Exception as _e:
+        raw_wrapper = None
+        _msg = f"[Poll startup] RawRSSIEngineWrapper failed (non-fatal): {_e}"
+        log.warning(_msg); _append_log("WARN", "", _msg)
+
+    # Kalman-filtered trilateration wrapper
+    try:
+        kalman_wrapper = KalmanRSSIEngineWrapper(env, cfg)
+        kf_cfg = cfg.get("system", {}).get("kalman_filter", {})
+        _msg = (
+            f"Kalman trilateration enabled  "
+            f"Q={kf_cfg.get('process_noise_Q', 1.0)}  "
+            f"R={kf_cfg.get('measurement_noise_R', 4.0)}"
+        )
+        log.config(_msg); _append_log("CONFIG", "", _msg)
+    except Exception as _e:
+        kalman_wrapper = None
+        _msg = f"[Poll startup] KalmanRSSIEngineWrapper failed (non-fatal): {_e}"
+        log.warning(_msg); _append_log("WARN", "", _msg)
+
     fp_wrapper: Optional[FingerprintWrapper] = None
     rm_template   = cfg.get("cloud", {}).get("radiomap_path", "radiomap_{campus}_{building}_{floor}.json")
     radiomap_path = cloud_io.resolve_radiomap_path(rm_template, env.campus_id, env.building_id, env.floor_id)
@@ -385,6 +418,16 @@ async def _poll_loop() -> None:
     except Exception as _e:
         _msg = f"[Poll startup] FAILED to load SGPWrapper: {type(_e).__name__}: {_e}"
         log.error(_msg); _append_log("ERROR", "", _msg)
+
+    # ToF wrapper — trilateration from ESP32 FTM ranges
+    tof_wrapper: Optional[ToFWrapper] = None
+    if env.tof_anchors:
+        tof_wrapper = ToFWrapper(anchor_map=env.tof_anchors)
+        _msg = f"ToF enabled  ({len(env.tof_anchors)} anchor(s): {', '.join(env.tof_anchors.keys())})"
+        log.config(_msg); _append_log("CONFIG", "", _msg)
+    else:
+        _msg = "ToF disabled (no tof_anchors configured)"
+        log.config(_msg); _append_log("CONFIG", "", _msg)
 
     # Build pipes
     try:
@@ -435,6 +478,35 @@ async def _poll_loop() -> None:
     )
     log.config(_start_msg)
     _append_log("CONFIG", "", _start_msg)
+
+    # ── Background task: drain MQTTPipe → ToFWrapper ─────────────────────────
+    async def _mqtt_consumer():
+        """Ingest every incoming ToFMeasurement and update tof_positions."""
+        async for meas in mqtt_pipe.stream():
+            if tof_wrapper is None:
+                continue
+            tof_wrapper.ingest(meas)
+            _ts_tof = _now()
+            # Locate every tag that has measurements ready
+            for _tag_id in tof_wrapper.tracked_tags():
+                _result = tof_wrapper.locate(_tag_id)
+                if _result is None:
+                    continue
+                _tx, _ty, _tconf = _result
+                _state["tof_positions"][_tag_id] = {
+                    "x":         _tx,
+                    "y":         _ty,
+                    "confidence": _tconf,
+                    "timestamp": _ts_tof,
+                }
+                _tof_msg = (
+                    f"[ToF] {_tag_id}  pos=({_tx:.1f}, {_ty:.1f}) cm"
+                    f"  conf={_tconf:.2f}"
+                )
+                log.config(_tof_msg)
+                _append_log("CONFIG", _tag_id, _tof_msg)
+
+    mqtt_task = asyncio.ensure_future(_mqtt_consumer())
 
     try:
         async for rssi_map in telnet_pipe.stream():
@@ -497,21 +569,43 @@ async def _poll_loop() -> None:
                 "results":      rssi_map,
             }
 
-            # ── Trilateration preview (every scan cycle) ──────────────────
+            # ── SMA trilateration preview (every scan cycle) ─────────────
             for d in rssi_wrapper.process_cycle(rssi_map, scan_number=n):
                 _prev_msg = (
-                    f"[Scan #{n}] {d.device_id} → {d.room_id}"
+                    f"[Scan #{n}][SMA] {d.device_id} → {d.room_id}"
                     f"  conf={d.confidence:.2f}  pos=({d.x:.1f}, {d.y:.1f})"
                 )
                 log.config(_prev_msg)
                 _append_log("CONFIG", d.device_id, _prev_msg)
-                # Update live map in real-time without any disk I/O
                 _state["rssi_positions"][d.device_id] = {
-                    "x":         d.x,
-                    "y":         d.y,
-                    "room_id":   d.room_id,
-                    "timestamp": _ts,
+                    "x": d.x, "y": d.y, "room_id": d.room_id, "timestamp": _ts,
                 }
+
+            # ── Raw trilateration preview (no filter baseline) ────────────
+            if raw_wrapper:
+                for d in raw_wrapper.process_cycle(rssi_map, scan_number=n):
+                    _raw_msg = (
+                        f"[Scan #{n}][RAW] {d.device_id} → {d.room_id}"
+                        f"  conf={d.confidence:.2f}  pos=({d.x:.1f}, {d.y:.1f})"
+                    )
+                    log.config(_raw_msg)
+                    _append_log("CONFIG", d.device_id, _raw_msg)
+                    _state["raw_positions"][d.device_id] = {
+                        "x": d.x, "y": d.y, "room_id": d.room_id, "timestamp": _ts,
+                    }
+
+            # ── Kalman trilateration preview ──────────────────────────────
+            if kalman_wrapper:
+                for d in kalman_wrapper.process_cycle(rssi_map, scan_number=n):
+                    _kal_msg = (
+                        f"[Scan #{n}][KAL] {d.device_id} → {d.room_id}"
+                        f"  conf={d.confidence:.2f}  pos=({d.x:.1f}, {d.y:.1f})"
+                    )
+                    log.config(_kal_msg)
+                    _append_log("CONFIG", d.device_id, _kal_msg)
+                    _state["kalman_positions"][d.device_id] = {
+                        "x": d.x, "y": d.y, "room_id": d.room_id, "timestamp": _ts,
+                    }
 
             # ── Sparse GP preview (every scan cycle, if trained) ─────────
             if gp_wrapper and gp_wrapper.trained:
@@ -543,7 +637,9 @@ async def _poll_loop() -> None:
             # ── Verdict window ─────────────────────────────────────────────
             if asyncio.get_event_loop().time() - last_verdict >= update_int:
                 await _run_verdict(
-                    scan_buffer, env, rssi_wrapper, fp_wrapper, gp_wrapper,
+                    scan_buffer, env,
+                    rssi_wrapper, raw_wrapper, kalman_wrapper,
+                    fp_wrapper, gp_wrapper, tof_wrapper,
                     target_ssids, required_ap_ids, min_aps_for_valid, n,
                 )
                 scan_buffer  = []
@@ -557,25 +653,30 @@ async def _poll_loop() -> None:
         _msg = f"[Poll loop CRASHED] {type(_e).__name__}: {_e}\n{_tb.format_exc()}"
         log.error(_msg); _append_log("ERROR", "", _msg)
     finally:
+        mqtt_task.cancel()
         await telnet_pipe.close()
         await mqtt_pipe.close()
         _state["poll_running"] = False
 
 
 async def _run_verdict(
-    scan_buffer:      list,
-    env:              FloorEnvironment,
-    rssi_wrapper:     RSSIEngineWrapper,
-    fp_wrapper:       Optional[FingerprintWrapper],
-    gp_wrapper:       Optional[SGPWrapper],
-    target_ssids:     List[str],
-    required_ap_ids:  set,
+    scan_buffer:       list,
+    env:               FloorEnvironment,
+    rssi_wrapper:      RSSIEngineWrapper,
+    raw_wrapper:       Optional[RawRSSIEngineWrapper],
+    kalman_wrapper:    Optional[KalmanRSSIEngineWrapper],
+    fp_wrapper:        Optional[FingerprintWrapper],
+    gp_wrapper:        Optional[SGPWrapper],
+    tof_wrapper:       Optional[ToFWrapper],
+    target_ssids:      List[str],
+    required_ap_ids:   set,
     min_aps_for_valid: int,
-    scan_counter:     int,
+    scan_counter:      int,
 ) -> None:
     """
     Aggregate the scan buffer and emit final localization decisions.
-    Runs BOTH trilateration AND fingerprinting (when available).
+    Runs SMA trilateration, Raw trilateration, Kalman trilateration,
+    fingerprinting, Sparse GP, and ToF (when available).
     """
     timestamp = _now()
     log.config("=" * 55 + "  VERDICT")
@@ -612,7 +713,7 @@ async def _run_verdict(
                 averaged[ap_id][ssid] = sum(vals) / len(vals)
         averaged = dict(averaged)
 
-        # ── Trilateration verdict ─────────────────────────────────────────
+        # ── SMA trilateration verdict ─────────────────────────────────────
         dec_id = str(uuid.uuid4())
         for d in rssi_wrapper.process_cycle(
             averaged,
@@ -620,7 +721,25 @@ async def _run_verdict(
             timestamp   = timestamp,
             decision_id = dec_id,
         ):
-            _store_decision(d, "rssi_decisions")   # logs at INFO internally
+            _store_decision(d, "rssi_decisions")
+
+        # ── Raw trilateration verdict (no filter baseline) ────────────────
+        if raw_wrapper:
+            for d in raw_wrapper.process_cycle(
+                averaged,
+                scan_number = scan_counter,
+                timestamp   = timestamp,
+            ):
+                _store_decision(d, "raw_decisions")
+
+        # ── Kalman trilateration verdict ──────────────────────────────────
+        if kalman_wrapper:
+            for d in kalman_wrapper.process_cycle(
+                averaged,
+                scan_number = scan_counter,
+                timestamp   = timestamp,
+            ):
+                _store_decision(d, "kalman_decisions")
 
         # ── Fingerprinting verdict ────────────────────────────────────────
         if fp_wrapper:
@@ -681,6 +800,59 @@ async def _run_verdict(
                         scan_number = scan_counter,
                     )
                     _store_decision(d, "gp_decisions")   # logs at INFO internally
+
+    # ── ToF verdict (one per tracked tag, independent of SSID loop) ─────────
+    if tof_wrapper:
+        for tag_id in tof_wrapper.tracked_tags():
+            tof_result = tof_wrapper.locate(tag_id)
+            if tof_result is None:
+                continue
+            tof_x, tof_y, tof_conf = tof_result
+
+            # Room lookup via point-in-polygon (reuse engine helper if available)
+            tof_room = "Undetected"
+            for r in env.rooms:
+                poly = r.polygon
+                if poly and _point_in_polygon(tof_x, tof_y, poly):
+                    tof_room = r.name
+                    break
+            if tof_room == "Undetected" and env.rooms:
+                # Fallback: nearest room centroid
+                best = min(
+                    env.rooms,
+                    key=lambda r: (r.center_x - tof_x)**2 + (r.center_y - tof_y)**2,
+                )
+                tof_room = best.name
+
+            d = LocalizationDecision(
+                decision_id = str(uuid.uuid4()),
+                device_id   = tag_id,
+                campus_id   = env.campus_id,
+                building_id = env.building_id,
+                floor_id    = env.floor_id,
+                room_id     = tof_room,
+                timestamp   = timestamp,
+                confidence  = tof_conf,
+                rssi_vector = {},
+                x           = tof_x,
+                y           = tof_y,
+                scan_number = scan_counter,
+            )
+            _store_decision(d, "tof_decisions")
+
+
+def _point_in_polygon(x: float, y: float, poly: list) -> bool:
+    """Ray-casting point-in-polygon test."""
+    inside = False
+    n = len(poly)
+    j = n - 1
+    for i in range(n):
+        xi, yi = poly[i]
+        xj, yj = poly[j]
+        if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / (yj - yi + 1e-12) + xi):
+            inside = not inside
+        j = i
+    return inside
 
 
 # ---------------------------------------------------------------------------
@@ -802,6 +974,20 @@ def get_decisions_trilateration(limit: int = Query(50, ge=1, le=500)):
     return {"method": "trilateration", "count": len(items), "items": items}
 
 
+@app.get("/decisions/raw")
+def get_decisions_raw(limit: int = Query(50, ge=1, le=500)):
+    """Raw RSSI trilateration decisions — no filtering applied (baseline)."""
+    items = _state["raw_decisions"][-limit:]
+    return {"method": "raw", "count": len(items), "items": items}
+
+
+@app.get("/decisions/kalman")
+def get_decisions_kalman(limit: int = Query(50, ge=1, le=500)):
+    """Kalman-filtered RSSI trilateration decisions."""
+    items = _state["kalman_decisions"][-limit:]
+    return {"method": "kalman", "count": len(items), "items": items}
+
+
 @app.get("/decisions/fingerprinting")
 def get_decisions_fingerprinting(limit: int = Query(50, ge=1, le=500)):
     items = _state["fp_decisions"][-limit:]
@@ -829,14 +1015,9 @@ def get_decisions_ble(limit: int = Query(50, ge=1, le=500)):
 
 @app.get("/decisions/tof")
 def get_decisions_tof(limit: int = Query(50, ge=1, le=500)):
-    """ToF localization — stub. Populated by MQTT pipeline when ToF anchors are configured."""
+    """ToF trilateration decisions from ESP32-S3 FTM ranging via MQTT."""
     items = _state["tof_decisions"][-limit:]
-    return {
-        "method":  "tof",
-        "count":   len(items),
-        "items":   items,
-        "note":    "ToF pipeline reads from MQTT; data appears here when ToF anchors report.",
-    }
+    return {"method": "tof", "count": len(items), "items": items}
 
 
 # ── Devices ───────────────────────────────────────────────────────────────────
@@ -901,10 +1082,12 @@ def get_map(method: str = Query("trilateration", description="trilateration | fi
     # Choose the right positions dict
     pos_map = {
         "trilateration": _state["rssi_positions"],
+        "raw":           _state["raw_positions"],
+        "kalman":        _state["kalman_positions"],
         "fingerprinting": _state["fp_positions"],
         "gp":            _state["gp_positions"],
-        "ble":  {},
-        "tof":  {},
+        "tof":           _state["tof_positions"],
+        "ble":           {},
     }.get(method, _state["rssi_positions"])
 
     devices = [

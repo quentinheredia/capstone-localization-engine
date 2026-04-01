@@ -261,6 +261,16 @@ class TelnetPipe:
 # ---------------------------------------------------------------------------
 
 class MQTTPipe:
+    """Subscribe to ESP32 ToF devices via MQTT and stream ToFMeasurement objects.
+
+    Topic scheme (unified):
+        capstone/tof/anchor/<id>/range   — from anchors
+        capstone/tof/tag/<id>/range      — from tags
+
+    Both publish the same JSON schema (see ToFMeasurement docstring).
+    The engine stamps each message with server-side UTC on arrival.
+    """
+
     def __init__(
         self,
         anchors: List[ToFAnchor],
@@ -276,8 +286,7 @@ class MQTTPipe:
         self._keepalive    = keepalive_s
         self._queue: asyncio.Queue[ToFMeasurement] = asyncio.Queue()
         self._client       = None
-        
-        # 1. Executor for MQTT background work if needed
+
         self._executor = ThreadPoolExecutor(max_workers=1)
 
     async def connect(self) -> None:
@@ -291,29 +300,37 @@ class MQTTPipe:
             log.warning("MQTTPipe: paho-mqtt not installed — ToF disabled")
             return
 
-        # Capture the loop strictly within the async context
         loop = asyncio.get_running_loop()
 
         def on_connect(client, userdata, flags, rc):
             if rc == 0:
-                for anchor in self._anchors:
-                    topic = f"{self._prefix}/{anchor.mac}/tof"
-                    client.subscribe(topic)
-                    log.info("MQTTPipe: subscribed to %s", topic)
+                # Wildcard subscribe: all device types + all IDs
+                topic = f"{self._prefix}/tof/+/+/range"
+                client.subscribe(topic)
+                log.info("MQTTPipe: subscribed to %s", topic)
 
         def on_message(client, userdata, msg):
             try:
-                # 3. Thread Safety: MQTT runs in its own thread. 
-                # We must use call_soon_threadsafe to interact with the loop's Queue.
+                from datetime import datetime, timezone
                 data = json.loads(msg.payload.decode())
+
+                # Engine-authoritative UTC timestamp
+                ts_now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
                 meas = ToFMeasurement(
-                    mac         = data.get("mac", ""),
-                    distance_m = float(data.get("distance_m", 0.0)),
-                    timestamp   = data.get("ts", ""),
+                    device_id   = data.get("device_id", ""),
+                    target_id   = data.get("target_id", ""),
+                    distance_m  = float(data.get("distance_m", 0.0)),
+                    rssi        = int(data.get("rssi", -100)),
+                    confidence  = float(data.get("confidence", 0.0)),
+                    scan_number = int(data.get("scan_number", 0)),
+                    timestamp   = ts_now,
+                    anchor_x    = data.get("anchor_x"),
+                    anchor_y    = data.get("anchor_y"),
                 )
                 loop.call_soon_threadsafe(self._queue.put_nowait, meas)
             except Exception as exc:
-                log.warning("MQTTPipe: bad payload: %s", exc)
+                log.warning("MQTTPipe: bad payload on %s: %s", msg.topic, exc)
 
         client = mqtt.Client()
         client.on_connect = on_connect
@@ -326,7 +343,6 @@ class MQTTPipe:
         if self._client:
             self._client.loop_stop()
             self._client.disconnect()
-        # 4. Lifecycle Management
         self._executor.shutdown(wait=True)
 
     async def stream(self) -> AsyncIterator[ToFMeasurement]:

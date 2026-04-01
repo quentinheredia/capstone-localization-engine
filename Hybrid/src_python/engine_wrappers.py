@@ -346,6 +346,415 @@ class RSSIEngineWrapper:
 
 
 # ---------------------------------------------------------------------------
+# KalmanRSSIFilter — per-channel scalar Kalman filter for RSSI smoothing
+# ---------------------------------------------------------------------------
+
+class KalmanRSSIFilter:
+    """Scalar 1-D Kalman filter, one independent instance per (ap_id, ssid) channel.
+
+    Signal model
+    ------------
+    State equation:     x_k  = x_{k-1}  +  w_k       w ~ N(0, Q)
+    Observation:        z_k  = x_k      +  v_k        v ~ N(0, R)
+
+    The constant-velocity model (dx/dt = 0) is appropriate for RSSI because the
+    underlying path-loss is slow relative to the measurement rate; short-burst
+    fluctuations are captured by Q and R rather than an explicit velocity term.
+
+    Parameters
+    ----------
+    Q : float
+        Process noise covariance.  Models genuine RSSI drift between measurements
+        (person walking, door opening, furniture moving).  Larger Q → filter
+        tracks faster but retains more noise.  Typical indoor range: 0.5 – 3.0.
+    R : float
+        Measurement noise covariance.  Models sensor + multipath variance.
+        Empirically, indoor RSSI has σ ≈ 2–4 dBm, so R ≈ σ² ≈ 4 – 16.
+        Larger R → filter trusts measurements less → smoother but more lagged.
+    noise_floor_dbm : float
+        Readings below this threshold are discarded (not fed into the filter).
+        This prevents the filter state from being corrupted by phantom APs.
+
+    Why Kalman beats SMA in dynamic environments
+    --------------------------------------------
+    The SMA weights all N samples equally regardless of their recency.  When the
+    true signal changes (person moves), the SMA requires N new samples to forget
+    the old value — introducing a lag of up to N/2 scan periods.
+
+    The Kalman filter maintains an adaptive gain K_k = P_k / (P_k + R).  When
+    prediction uncertainty P is large (signal has been changing), K is large and
+    the filter snaps quickly to new measurements.  When P is small (signal has
+    been stable), K is small and the filter smooths aggressively.  This
+    predictive-variance weighting produces lower steady-state MSE than any fixed
+    window average under Gaussian noise — the Kalman estimator is the MMSE
+    (minimum mean-square error) estimator for this model class.
+    """
+
+    def __init__(self, Q: float = 1.0, R: float = 4.0,
+                 noise_floor_dbm: float = -80.0) -> None:
+        self._Q           = Q
+        self._R           = R
+        self._noise_floor = noise_floor_dbm
+        # Per-channel filter state: {key: (x_hat, P)}
+        # x_hat = estimated RSSI, P = estimation error covariance
+        self._state: Dict[str, Tuple[float, float]] = {}
+
+    def feed(self, ap_id: str, ssid: str, raw_rssi: float) -> Optional[float]:
+        """Feed one raw RSSI reading.  Returns smoothed estimate, or None if
+        below noise floor."""
+        if raw_rssi < self._noise_floor:
+            return None
+
+        key = f"{ap_id}::{ssid}"
+
+        if key not in self._state:
+            # Bootstrap: initialise with first observation, high uncertainty
+            self._state[key] = (raw_rssi, self._R)
+            return raw_rssi
+
+        x_prev, P_prev = self._state[key]
+
+        # ── Predict ──────────────────────────────────────────────────────────
+        # State is constant-velocity; prediction = previous estimate
+        x_pred = x_prev
+        P_pred = P_prev + self._Q     # uncertainty grows between measurements
+
+        # ── Update ───────────────────────────────────────────────────────────
+        K       = P_pred / (P_pred + self._R)          # Kalman gain  ∈ (0, 1)
+        x_hat   = x_pred + K * (raw_rssi - x_pred)     # corrected estimate
+        P_new   = (1.0 - K) * P_pred                   # updated covariance
+
+        self._state[key] = (x_hat, P_new)
+        return x_hat
+
+    def process(self, raw_rssi: "RSSIMap") -> "RSSIMap":
+        """Batch-process a full RSSIMap.  Returns a new map of Kalman-filtered
+        values; channels below the noise floor are omitted."""
+        out: "RSSIMap" = {}
+        for ap_id, dev_map in raw_rssi.items():
+            for ssid, rssi in dev_map.items():
+                smoothed = self.feed(ap_id, ssid, rssi)
+                if smoothed is not None:
+                    out.setdefault(ap_id, {})[ssid] = smoothed
+        return out
+
+    def reset(self) -> None:
+        """Clear all channel state (e.g. after a poll restart)."""
+        self._state.clear()
+
+    @property
+    def Q(self) -> float:  return self._Q
+    @property
+    def R(self) -> float:  return self._R
+
+
+# ---------------------------------------------------------------------------
+# _PythonRSSIEngineRaw — same as _PythonRSSIEngine but with NO smoothing
+# ---------------------------------------------------------------------------
+
+class _PythonRSSIEngineRaw:
+    """Pure-Python trilateration with no RSSI filtering.
+    Raw readings are passed directly to the path-loss distance model."""
+
+    def __init__(self, noise_floor: float) -> None:
+        self._noise = noise_floor
+
+    def process(self, raw_rssi: "RSSIMap", targets, aps, rooms) -> list:
+        results = []
+        for target in targets:
+            ssid          = target.ssid
+            rssi_at_1m    = target.rssi_at_1m_dbm
+            path_loss_n   = target.path_loss_n
+
+            ap_positions, distances, rssi_vec = [], [], {}
+            for ap_id, dev_map in raw_rssi.items():
+                if ssid not in dev_map:
+                    continue
+                raw_val = dev_map[ssid]
+                if raw_val <= self._noise:
+                    continue
+                rssi_vec[ap_id] = raw_val                    # ← no smoothing
+                ap = aps.get(ap_id)
+                if ap is None:
+                    continue
+                dist = _rssi_to_distance(raw_val, rssi_at_1m, path_loss_n)
+                ap_positions.append(ap)
+                distances.append(dist)
+
+            if len(ap_positions) < 1:
+                continue
+
+            x, y = _weighted_centroid(ap_positions, distances)
+            if rooms:
+                max_x = max((max(p[0] for p in r.polygon) for r in rooms if r.polygon), default=20.0)
+                max_y = max((max(p[1] for p in r.polygon) for r in rooms if r.polygon), default=20.0)
+                x = max(0.0, min(x, max_x))
+                y = max(0.0, min(y, max_y))
+
+            room  = _find_room(x, y, rooms) or "Undetected"
+            n_aps = len(ap_positions)
+            spread = (max(distances) - min(distances)) if len(distances) > 1 else 0.0
+            conf  = min(1.0, n_aps / 3.0) * max(0.1, 1.0 - spread / 20.0)
+            results.append((ssid, room, round(conf, 3), round(x, 2), round(y, 2), rssi_vec))
+        return results
+
+
+# ---------------------------------------------------------------------------
+# RawRSSIEngineWrapper — trilateration with NO pre-filtering
+# ---------------------------------------------------------------------------
+
+class RawRSSIEngineWrapper:
+    """Trilateration on unfiltered raw RSSI values.
+
+    When the C++ engine is available, it is instantiated with window_size=1
+    (single-sample window = identity filter).  On the Python path, raw values
+    are passed directly to the distance model.
+
+    Use this as a baseline to quantify how much error filtering removes.
+    """
+
+    def __init__(self, env: FloorEnvironment, cfg: dict) -> None:
+        sys_cfg = cfg.get("system", {})
+        filt    = sys_cfg.get("signal_filter", {})
+        noise_floor = float(filt.get("noise_floor_dbm", -80.0))
+
+        self._env         = env
+        self._campus_id   = env.campus_id
+        self._building_id = env.building_id
+        self._floor_id    = env.floor_id
+
+        if _CPP_AVAILABLE:
+            self._use_cpp = True
+            # window_size=1 → only the most recent sample → effectively no smoothing
+            self._engine = cc.RSSIEngine(
+                window_size     = 1,
+                noise_floor_dbm = noise_floor,
+                min_aps         = int(filt.get("min_aps_for_localization", 3)),
+                clamp_margin    = float(sys_cfg.get("boundary_clamp_margin_m", 0.01)),
+                max_dist_conf   = float(sys_cfg.get("max_distance_for_high_confidence_m", 3.0)),
+                room_w          = env.width_m,
+                room_h          = env.height_m,
+            )
+            self._engine.set_aps(_make_cpp_ap_defs(env))
+            self._engine.set_rooms(_make_cpp_room_defs(env))
+            self._cpp_targets = _make_cpp_target_defs(env.targets)
+        else:
+            self._use_cpp  = False
+            self._py_engine = _PythonRSSIEngineRaw(noise_floor=noise_floor)
+
+    def process_cycle(
+        self,
+        raw_rssi:    "RSSIMap",
+        scan_number: int = 0,
+        timestamp:   Optional[str] = None,
+        decision_id: Optional[str] = None,
+    ) -> List[LocalizationDecision]:
+        import uuid
+        from datetime import datetime, timezone
+
+        if timestamp is None:
+            timestamp = datetime.now(timezone.utc).isoformat()
+        if decision_id is None:
+            decision_id = str(uuid.uuid4())
+
+        decisions: List[LocalizationDecision] = []
+
+        if not self._use_cpp:
+            py_results = self._py_engine.process(
+                raw_rssi,
+                targets = self._env.targets,
+                aps     = self._env.wifi_aps,
+                rooms   = self._env.rooms,
+            )
+            for ssid, room, conf, x, y, rssi_vec in py_results:
+                if room == "Undetected":
+                    continue
+                decisions.append(LocalizationDecision(
+                    decision_id = str(uuid.uuid4()),
+                    device_id   = ssid,
+                    campus_id   = self._campus_id,
+                    building_id = self._building_id,
+                    floor_id    = self._floor_id,
+                    room_id     = room,
+                    timestamp   = timestamp,
+                    confidence  = conf,
+                    rssi_vector = rssi_vec,
+                    x=x, y=y,
+                    scan_number = scan_number,
+                ))
+            return decisions
+
+        cpp_results = self._engine.process_cycle(raw_rssi, self._cpp_targets)
+        for r in cpp_results:
+            if r.room == "Undetected":
+                continue
+            rssi_vec = {
+                ap_id: raw_rssi[ap_id][r.device_id]
+                for ap_id in raw_rssi
+                if r.device_id in raw_rssi.get(ap_id, {})
+            }
+            decisions.append(LocalizationDecision(
+                decision_id = decision_id,
+                device_id   = r.device_id,
+                campus_id   = self._campus_id,
+                building_id = self._building_id,
+                floor_id    = self._floor_id,
+                room_id     = r.room,
+                timestamp   = timestamp,
+                confidence  = r.confidence,
+                rssi_vector = rssi_vec,
+                x=r.x, y=r.y,
+                scan_number = scan_number,
+            ))
+        return decisions
+
+
+# ---------------------------------------------------------------------------
+# KalmanRSSIEngineWrapper — trilateration with Kalman-filtered RSSI
+# ---------------------------------------------------------------------------
+
+class KalmanRSSIEngineWrapper:
+    """Trilateration with per-channel scalar Kalman filter preprocessing.
+
+    Pipeline per scan cycle
+    -----------------------
+    1. KalmanRSSIFilter.process(raw_rssi)   → kalman_rssi  (Python)
+    2. C++ RSSIEngine.process_cycle(kalman_rssi, window=1)  (or Python fallback)
+        → list of LocalizationDecision
+
+    The Kalman filter runs entirely in Python (no C++ recompile needed) and
+    produces the smoothed RSSI map that is then handed to the C++ trilateration
+    engine with window_size=1 so the C++ layer does not apply additional SMA on
+    top of the already-filtered signal.
+
+    Configuration (config.yaml → system.kalman_filter)
+    ---------------------------------------------------
+      process_noise_Q : float   default 1.0   [dBm²]
+      measurement_noise_R : float  default 4.0  [dBm²]
+      noise_floor_dbm : float   (shared with signal_filter block)
+
+    Tuning guidance
+    ---------------
+    * Increase Q if the estimated position lags behind a moving tag.
+    * Increase R if the output is still noisy after calibration.
+    * Run with raw and SMA wrappers in parallel and compare MSE to find the
+      optimal (Q, R) pair for your specific environment.
+    """
+
+    def __init__(self, env: FloorEnvironment, cfg: dict) -> None:
+        sys_cfg  = cfg.get("system", {})
+        filt     = sys_cfg.get("signal_filter", {})
+        kf_cfg   = sys_cfg.get("kalman_filter", {})
+        noise_floor = float(filt.get("noise_floor_dbm", -80.0))
+
+        self._env         = env
+        self._campus_id   = env.campus_id
+        self._building_id = env.building_id
+        self._floor_id    = env.floor_id
+
+        Q = float(kf_cfg.get("process_noise_Q",      1.0))
+        R = float(kf_cfg.get("measurement_noise_R",  4.0))
+        self._kalman = KalmanRSSIFilter(Q=Q, R=R, noise_floor_dbm=noise_floor)
+
+        _log.info(
+            "KalmanRSSIEngineWrapper: Q=%.2f  R=%.2f  noise_floor=%.1f dBm",
+            Q, R, noise_floor,
+        )
+
+        if _CPP_AVAILABLE:
+            self._use_cpp = True
+            # window=1: C++ just passes kalman-pre-filtered values straight through
+            self._engine = cc.RSSIEngine(
+                window_size     = 1,
+                noise_floor_dbm = noise_floor,
+                min_aps         = int(filt.get("min_aps_for_localization", 3)),
+                clamp_margin    = float(sys_cfg.get("boundary_clamp_margin_m", 0.01)),
+                max_dist_conf   = float(sys_cfg.get("max_distance_for_high_confidence_m", 3.0)),
+                room_w          = env.width_m,
+                room_h          = env.height_m,
+            )
+            self._engine.set_aps(_make_cpp_ap_defs(env))
+            self._engine.set_rooms(_make_cpp_room_defs(env))
+            self._cpp_targets = _make_cpp_target_defs(env.targets)
+        else:
+            self._use_cpp  = False
+            # Python fallback: reuse _PythonRSSIEngine with window=1 (no extra SMA)
+            self._py_engine = _PythonRSSIEngine(window_size=1, noise_floor=noise_floor)
+
+    def process_cycle(
+        self,
+        raw_rssi:    "RSSIMap",
+        scan_number: int = 0,
+        timestamp:   Optional[str] = None,
+        decision_id: Optional[str] = None,
+    ) -> List[LocalizationDecision]:
+        import uuid
+        from datetime import datetime, timezone
+
+        if timestamp is None:
+            timestamp = datetime.now(timezone.utc).isoformat()
+        if decision_id is None:
+            decision_id = str(uuid.uuid4())
+
+        # ── Step 1: Kalman filter in Python ──────────────────────────────────
+        filtered_rssi = self._kalman.process(raw_rssi)
+
+        decisions: List[LocalizationDecision] = []
+
+        if not self._use_cpp:
+            # ── Python path ──────────────────────────────────────────────────
+            py_results = self._py_engine.process(
+                filtered_rssi,
+                targets = self._env.targets,
+                aps     = self._env.wifi_aps,
+                rooms   = self._env.rooms,
+            )
+            for ssid, room, conf, x, y, rssi_vec in py_results:
+                if room == "Undetected":
+                    continue
+                decisions.append(LocalizationDecision(
+                    decision_id = str(uuid.uuid4()),
+                    device_id   = ssid,
+                    campus_id   = self._campus_id,
+                    building_id = self._building_id,
+                    floor_id    = self._floor_id,
+                    room_id     = room,
+                    timestamp   = timestamp,
+                    confidence  = conf,
+                    rssi_vector = rssi_vec,
+                    x=x, y=y,
+                    scan_number = scan_number,
+                ))
+            return decisions
+
+        # ── C++ path (Kalman-pre-filtered → engine with window=1) ────────────
+        cpp_results = self._engine.process_cycle(filtered_rssi, self._cpp_targets)
+        for r in cpp_results:
+            if r.room == "Undetected":
+                continue
+            # Report the Kalman-smoothed vector (what was actually used)
+            rssi_vec = {
+                ap_id: filtered_rssi[ap_id][r.device_id]
+                for ap_id in filtered_rssi
+                if r.device_id in filtered_rssi.get(ap_id, {})
+            }
+            decisions.append(LocalizationDecision(
+                decision_id = decision_id,
+                device_id   = r.device_id,
+                campus_id   = self._campus_id,
+                building_id = self._building_id,
+                floor_id    = self._floor_id,
+                room_id     = r.room,
+                timestamp   = timestamp,
+                confidence  = r.confidence,
+                rssi_vector = rssi_vec,
+                x=r.x, y=r.y,
+                scan_number = scan_number,
+            ))
+        return decisions
+
+
+# ---------------------------------------------------------------------------
 # FingerprintWrapper
 # ---------------------------------------------------------------------------
 
@@ -984,3 +1393,216 @@ class TelnetParserWrapper:
         if _CPP_AVAILABLE:
             return cc.parse_apscan_table_dicts(raw_text)
         return _parse_apscan_python(raw_text)
+
+
+# ---------------------------------------------------------------------------
+# ToFWrapper  —  server-side trilateration from raw ESP32 FTM ranges
+# ---------------------------------------------------------------------------
+
+class ToFWrapper:
+    """Collects raw FTM range measurements from MQTTPipe and runs
+    server-side trilateration (least-squares) for each tracked tag.
+
+    Architecture
+    ------------
+    * Anchors are the *fixed* devices whose positions are known (from
+      config.yaml tof_anchors).  The ESP32 anchor firmware publishes
+      one JSON message per tag it ranged to.
+    * Tags are the *mobile* devices being located.  The thin-client tag
+      firmware publishes one JSON message per anchor it ranged to.
+    * Both message types carry (device_id, target_id, distance_m) and
+      land on   capstone/tof/anchor/<id>/range
+                capstone/tof/tag/<id>/range
+    * This wrapper buffers the latest measurements per (tag, anchor) pair,
+      runs outlier rejection, then solves the linearised least-squares
+      system to produce (x, y) in cm.
+
+    Usage
+    -----
+        wrapper = ToFWrapper(anchor_map)
+        wrapper.ingest(measurement)       # call for every MQTTPipe message
+        result = wrapper.locate("tag_0")  # -> (x_cm, y_cm, confidence) | None
+    """
+
+    # Keep only the N most recent measurements per (tag, anchor) pair
+    _WINDOW = 5
+    # Reject samples whose distance deviates more than this many σ from the mean
+    _SIGMA_REJECT = 2.5
+
+    def __init__(self, anchor_map: Dict[str, "ToFAnchor"]) -> None:
+        """
+        Parameters
+        ----------
+        anchor_map : dict mapping anchor_id str -> ToFAnchor
+                     e.g. {"anchor_4": ToFAnchor(id="anchor_4", mac=..., x=0, y=0)}
+        """
+        from collections import defaultdict, deque
+        # anchor_map: {anchor_id -> ToFAnchor}
+        self._anchors: Dict[str, object] = anchor_map
+
+        # Buffer: {tag_id: {anchor_id: deque([distance_m, ...])}}
+        self._buffer: Dict[str, Dict[str, object]] = defaultdict(
+            lambda: defaultdict(lambda: __import__('collections').deque(maxlen=self._WINDOW))
+        )
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def ingest(self, meas: "ToFMeasurement") -> None:
+        """Feed one ToFMeasurement from MQTTPipe into the buffer.
+
+        Both anchor-sourced and tag-sourced messages are handled:
+          anchor msg: device_id="anchor_X", target_id="tag_Y"
+          tag msg:    device_id="tag_Y",   target_id="anchor_X"
+        In both cases we store distance under (tag_id, anchor_id).
+        """
+        dev = meas.device_id
+        tgt = meas.target_id
+
+        if dev.startswith("anchor_") and tgt.startswith("tag_"):
+            anchor_id = dev
+            tag_id    = tgt
+        elif dev.startswith("tag_") and tgt.startswith("anchor_"):
+            tag_id    = dev
+            anchor_id = tgt
+        else:
+            _log.debug("ToFWrapper: ignoring unrecognised pair %s -> %s", dev, tgt)
+            return
+
+        if anchor_id not in self._anchors:
+            _log.debug("ToFWrapper: anchor %s not in config, skipping", anchor_id)
+            return
+
+        d_cm = meas.distance_m * 100.0
+        self._buffer[tag_id][anchor_id].append(d_cm)
+
+    def locate(self, tag_id: str) -> Optional[Tuple[float, float, float]]:
+        """Return (x_cm, y_cm, confidence) for *tag_id*, or None if
+        fewer than 2 anchors have measurements.
+
+        Confidence is a [0, 1] float derived from number of usable anchors
+        and their mean RSSI-quality proxied by measurement consistency.
+        """
+        anchor_buf = self._buffer.get(tag_id)
+        if not anchor_buf:
+            return None
+
+        # Collect filtered median distances per anchor
+        ax, ay, ad = [], [], []
+        for anchor_id, samples in anchor_buf.items():
+            if len(samples) == 0:
+                continue
+            anchor = self._anchors.get(anchor_id)
+            if anchor is None:
+                continue
+            dist = self._filtered_median(list(samples))
+            if dist is None:
+                continue
+            ax.append(float(anchor.x))
+            ay.append(float(anchor.y))
+            ad.append(dist)
+
+        n = len(ax)
+        if n < 2:
+            return None
+
+        x, y = self._trilaterate(ax, ay, ad, n)
+        confidence = self._confidence(n)
+        return (x, y, confidence)
+
+    def tracked_tags(self) -> List[str]:
+        """Return list of tag IDs that have at least one measurement."""
+        return list(self._buffer.keys())
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _filtered_median(self, samples: List[float]) -> Optional[float]:
+        """Return the median of *samples* after σ-based outlier rejection."""
+        if not samples:
+            return None
+        if len(samples) == 1:
+            return samples[0]
+
+        mean = sum(samples) / len(samples)
+        var  = sum((s - mean) ** 2 for s in samples) / len(samples)
+        std  = math.sqrt(var) if var > 0 else 0.0
+
+        if std > 0:
+            clean = [s for s in samples
+                     if abs(s - mean) <= self._SIGMA_REJECT * std]
+        else:
+            clean = samples
+
+        if not clean:
+            clean = samples  # all rejected → keep all
+
+        clean_sorted = sorted(clean)
+        mid = len(clean_sorted) // 2
+        if len(clean_sorted) % 2 == 0:
+            return (clean_sorted[mid - 1] + clean_sorted[mid]) / 2.0
+        return float(clean_sorted[mid])
+
+    @staticmethod
+    def _trilaterate(
+        ax: List[float], ay: List[float], ad: List[float], n: int
+    ) -> Tuple[float, float]:
+        """Linearised least-squares trilateration.
+
+        With n == 2: distance-weighted average (degenerate case).
+        With n >= 3: full linearised LS using anchor 0 as reference.
+        """
+        if n == 2:
+            w0 = 1.0 / (ad[0] + 1.0)
+            w1 = 1.0 / (ad[1] + 1.0)
+            x  = (ax[0] * w0 + ax[1] * w1) / (w0 + w1)
+            y  = (ay[0] * w0 + ay[1] * w1) / (w0 + w1)
+            return (x, y)
+
+        # Build A matrix and b vector relative to anchor 0
+        rows = n - 1
+        A  = [[0.0, 0.0] for _ in range(rows)]
+        b  = [0.0] * rows
+        for i in range(1, n):
+            A[i-1][0] = 2.0 * (ax[i] - ax[0])
+            A[i-1][1] = 2.0 * (ay[i] - ay[0])
+            b[i-1]    = (ad[0]**2 - ad[i]**2
+                         - ax[0]**2 + ax[i]**2
+                         - ay[0]**2 + ay[i]**2)
+
+        # Normal equations  AᵀA · [x,y]ᵀ = Aᵀb
+        ATA = [[0.0, 0.0], [0.0, 0.0]]
+        ATb = [0.0, 0.0]
+        for i in range(rows):
+            ATA[0][0] += A[i][0] * A[i][0]
+            ATA[0][1] += A[i][0] * A[i][1]
+            ATA[1][0] += A[i][1] * A[i][0]
+            ATA[1][1] += A[i][1] * A[i][1]
+            ATb[0]    += A[i][0] * b[i]
+            ATb[1]    += A[i][1] * b[i]
+
+        det = ATA[0][0] * ATA[1][1] - ATA[0][1] * ATA[1][0]
+        if abs(det) < 1e-6:
+            # Degenerate geometry — fall back to weighted centroid
+            w   = [1.0 / (d + 1.0) for d in ad]
+            sw  = sum(w)
+            x   = sum(ax[i] * w[i] for i in range(n)) / sw
+            y   = sum(ay[i] * w[i] for i in range(n)) / sw
+            return (x, y)
+
+        x = (ATA[1][1] * ATb[0] - ATA[0][1] * ATb[1]) / det
+        y = (ATA[0][0] * ATb[1] - ATA[1][0] * ATb[0]) / det
+        return (x, y)
+
+    @staticmethod
+    def _confidence(n_anchors: int) -> float:
+        """Map anchor count to a [0, 1] confidence score."""
+        if n_anchors >= 4:
+            return 1.0
+        if n_anchors == 3:
+            return 0.75
+        if n_anchors == 2:
+            return 0.45
+        return 0.2

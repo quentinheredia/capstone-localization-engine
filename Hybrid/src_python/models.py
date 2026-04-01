@@ -59,10 +59,28 @@ class LocalizationDecision:
 
 @dataclass
 class ToFMeasurement:
-    """Payload pushed by an ESP32-C3 anchor over MQTT."""
-    mac:        str
-    distance_m: float
-    timestamp:  str                  # ISO-8601 UTC
+    """Single range measurement pushed by an ESP32-S3 device over MQTT.
+
+    Fields populated from the unified JSON payload:
+        device_id  : originating device  (e.g. "anchor_4" or "tag_0")
+        target_id  : remote peer         (e.g. "tag_0" or "anchor_61")
+        distance_m : FTM-derived range in metres
+        rssi       : scan-time RSSI (dBm)
+        confidence : RSSI-derived 0-1 heuristic
+        scan_number: firmware scan counter
+        timestamp  : engine-stamped ISO-8601 UTC (authoritative)
+        anchor_x   : anchor X position in cm (only present from anchor msgs)
+        anchor_y   : anchor Y position in cm (only present from anchor msgs)
+    """
+    device_id:   str
+    target_id:   str
+    distance_m:  float
+    rssi:        int               = -100
+    confidence:  float             = 0.0
+    scan_number: int               = 0
+    timestamp:   str               = ""    # ISO-8601 UTC (engine-stamped)
+    anchor_x:    Optional[float]   = None  # cm, present on anchor messages
+    anchor_y:    Optional[float]   = None  # cm, present on anchor messages
 
 
 @dataclass
