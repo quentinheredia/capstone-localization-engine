@@ -118,6 +118,7 @@
     <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/echarts/5.4.3/echarts.min.js"></script>
     <script>
       if (window.pdfjsLib)
         pdfjsLib.GlobalWorkerOptions.workerSrc =
@@ -783,6 +784,7 @@
         { id: "devices",   label: "Devices",         icon: "\uD83D\uDCE1" },
         { id: "logs",      label: "Logs",            icon: "\uD83D\uDCCB" },
         { id: "espflash",  label: "Flash ESP",       icon: "\u26A1" },
+        { id: "analytics", label: "Analytics",        icon: "\uD83D\uDCCA" },
       ];
 
       // ── SVG icon helpers ────────────────────────────────────────────────────
@@ -8841,6 +8843,726 @@
       }
 
       // ═════════════════════════════════════════════════════════════════════
+      // ═════════════════════════════════════════════════════════════════════
+      // ANALYTICS DASHBOARD
+      // Compares localization algorithm accuracy against a known ground truth.
+      //
+      // Data flow:
+      //   GET /analytics/accuracy  (polled every 600 ms, non-blocking)
+      //     → Python AccuracyAnalytics.build_payload()
+      //       → C++ AccuracyEngine rolling error buffers
+      //
+      // Charts:
+      //   1. CDF Line Chart  — ECharts (one series per method)
+      //   2. Live Scatter Map — SVG overlay on floor plan
+      // ═════════════════════════════════════════════════════════════════════
+
+      // ── Per-method display properties (extends METHOD_INFO) ───────────────
+      const ANALYTICS_METHOD_COLORS = {
+        trilateration: "#3b82f6",  // blue
+        raw:           "#ef4444",  // red
+        kalman:        "#06b6d4",  // cyan
+        fingerprinting:"#a855f7",  // purple
+        gp:            "#14b8a6",  // teal
+        tof:           "#f97316",  // orange
+        ble:           "#22c55e",  // green
+      };
+
+      function getMethodColor(method) {
+        return ANALYTICS_METHOD_COLORS[method] ||
+          `hsl(${(method.charCodeAt(0) * 37) % 360},70%,55%)`;
+      }
+
+      // ── Helper: format metres nicely ─────────────────────────────────────
+      function fmt(v) {
+        if (v == null) return "—";
+        return Number(v).toFixed(2) + " m";
+      }
+
+      // ── CDF ECharts component ─────────────────────────────────────────────
+      function CdfChart({ methods, hardCapM }) {
+        const divRef   = useRef(null);
+        const chartRef = useRef(null);
+
+        // Init ECharts instance once
+        useEffect(() => {
+          if (!divRef.current || !window.echarts) return;
+          chartRef.current = window.echarts.init(divRef.current, "dark");
+          return () => { chartRef.current && chartRef.current.dispose(); };
+        }, []);
+
+        // Update whenever data changes
+        useEffect(() => {
+          if (!chartRef.current) return;
+          const methodKeys = Object.keys(methods || {});
+          if (!methodKeys.length) {
+            chartRef.current.setOption({ series: [] });
+            return;
+          }
+
+          const series = methodKeys.map((m) => {
+            const cdf = (methods[m].cdf || []);
+            return {
+              name:      (METHOD_INFO[m] || {}).label || m,
+              type:      "line",
+              smooth:    true,
+              symbol:    "circle",
+              symbolSize: 5,
+              lineStyle: { color: getMethodColor(m), width: 2 },
+              itemStyle: { color: getMethodColor(m) },
+              data:      cdf.map((pt) => [pt.threshold_m, pt.pct]),
+              markLine:  {
+                silent: true,
+                lineStyle: { type: "dashed", color: "#6b7280", width: 1 },
+                data: [{ xAxis: hardCapM || 10, name: ">10 m cap" }],
+              },
+            };
+          });
+
+          chartRef.current.setOption({
+            backgroundColor: "transparent",
+            tooltip: {
+              trigger: "axis",
+              formatter: (params) =>
+                params.map((p) =>
+                  `${p.seriesName}: <b>${p.data[1].toFixed(1)}%</b> @ ${p.data[0]}m`
+                ).join("<br/>"),
+            },
+            legend: {
+              top: 4,
+              textStyle: { color: "#d1d5db", fontSize: 11 },
+            },
+            grid: { left: 52, right: 24, top: 36, bottom: 40 },
+            xAxis: {
+              type: "value",
+              name: "Error (m)",
+              nameLocation: "middle",
+              nameGap: 28,
+              min: 0,
+              max: hardCapM || 10,
+              axisLabel: { color: "#9ca3af" },
+              axisLine:  { lineStyle: { color: "#374151" } },
+              splitLine: { lineStyle: { color: "#1f2937" } },
+            },
+            yAxis: {
+              type:  "value",
+              name:  "CDF (%)",
+              nameLocation: "middle",
+              nameGap: 36,
+              min:   0,
+              max:   100,
+              axisLabel: { color: "#9ca3af", formatter: "{value}%" },
+              axisLine:  { lineStyle: { color: "#374151" } },
+              splitLine: { lineStyle: { color: "#1f2937" } },
+            },
+            series,
+          }, /* notMerge */ true);
+        }, [methods, hardCapM]);
+
+        // Resize on window resize
+        useEffect(() => {
+          const onResize = () => chartRef.current && chartRef.current.resize();
+          window.addEventListener("resize", onResize);
+          return () => window.removeEventListener("resize", onResize);
+        }, []);
+
+        return h("div", { ref: divRef, style: { width: "100%", height: "320px" } });
+      }
+
+      // ── Scatter map SVG component ─────────────────────────────────────────
+      // Renders room outlines + ground truth pin + per-method position dots.
+      function ScatterMap({ methods, groundTruth, mapData }) {
+        const W = 420, H = 300;
+        const rooms   = mapData?.rooms   || [];
+        const fw      = mapData?.floor?.width_m  || 10;
+        const fh      = mapData?.floor?.height_m || 10;
+        const sx = W / fw, sy = H / fh;
+
+        // Newest estimate per method
+        const latest = {};
+        Object.keys(methods || {}).forEach((m) => {
+          const scatter = (methods[m].scatter || []);
+          if (scatter.length) latest[m] = scatter[scatter.length - 1];
+        });
+
+        return h(
+          "svg",
+          {
+            viewBox: `0 0 ${W} ${H}`,
+            style: { width: "100%", height: "100%", background: "#18181b", display: "block" },
+          },
+          // Room polygons
+          ...rooms.map((r, ri) =>
+            r.polygon?.length
+              ? h("polygon", {
+                  key: "r" + ri,
+                  points: r.polygon.map(([px, py]) => `${px * sx},${py * sy}`).join(" "),
+                  fill: "rgba(99,102,241,0.1)",
+                  stroke: "#4b5563",
+                  strokeWidth: 0.8,
+                })
+              : null
+          ),
+          // Scatter trails — older dots, fading
+          ...Object.keys(methods || {}).flatMap((m) => {
+            const scatter = (methods[m].scatter || []);
+            return scatter.slice(0, -1).map((s, i) => {
+              const alpha = 0.1 + 0.35 * (i / Math.max(scatter.length - 1, 1));
+              return h("circle", {
+                key: `trail-${m}-${i}`,
+                cx: s.x * sx, cy: s.y * sy, r: 3,
+                fill: getMethodColor(m),
+                opacity: alpha,
+              });
+            });
+          }),
+          // Latest estimate dots (large, solid)
+          ...Object.keys(latest).map((m) => {
+            const s = latest[m];
+            const color = getMethodColor(m);
+            return h("g", { key: "dot-" + m },
+              h("circle", { cx: s.x * sx, cy: s.y * sy, r: 7, fill: color, opacity: 0.85 }),
+              h("text", {
+                x: s.x * sx + 9, y: s.y * sy + 4,
+                fontSize: 9, fill: color, fontWeight: "bold",
+              }, (METHOD_INFO[m] || {}).label || m),
+            );
+          }),
+          // Ground truth marker (star / crosshair)
+          groundTruth && h("g", { key: "gt" },
+            h("circle", {
+              cx: groundTruth.x * sx, cy: groundTruth.y * sy,
+              r: 8, fill: "none", stroke: "#facc15", strokeWidth: 2,
+            }),
+            h("line", {
+              x1: groundTruth.x * sx - 12, y1: groundTruth.y * sy,
+              x2: groundTruth.x * sx + 12, y2: groundTruth.y * sy,
+              stroke: "#facc15", strokeWidth: 1.5,
+            }),
+            h("line", {
+              x1: groundTruth.x * sx, y1: groundTruth.y * sy - 12,
+              x2: groundTruth.x * sx, y2: groundTruth.y * sy + 12,
+              stroke: "#facc15", strokeWidth: 1.5,
+            }),
+            h("text", {
+              x: groundTruth.x * sx + 10, y: groundTruth.y * sy - 8,
+              fontSize: 9, fill: "#facc15",
+            }, "GT"),
+          ),
+        );
+      }
+
+      // ── Stats table ───────────────────────────────────────────────────────
+      function StatsTable({ methods }) {
+        const rows = Object.keys(methods || {});
+        if (!rows.length) return h("p", { className: "text-zinc-500 text-sm" }, "No data yet.");
+
+        return h(
+          "div", { className: "overflow-x-auto" },
+          h(
+            "table",
+            { className: "text-xs w-full border-collapse" },
+            h("thead", null,
+              h("tr", { className: "text-zinc-400" },
+                ["Method", "N", "Mean", "Median", "P95", "Failures"].map((col) =>
+                  h("th", { key: col, className: "text-left px-2 py-1 border-b border-zinc-700" }, col)
+                )
+              )
+            ),
+            h("tbody", null,
+              rows.map((m) => {
+                const s = methods[m].stats || {};
+                const color = getMethodColor(m);
+                return h("tr", { key: m, className: "border-b border-zinc-800 hover:bg-zinc-800/40" },
+                  h("td", { className: "px-2 py-1 font-semibold", style: { color } },
+                    (METHOD_INFO[m] || {}).label || m),
+                  h("td", { className: "px-2 py-1 text-zinc-300" }, s.n_samples ?? "—"),
+                  h("td", { className: "px-2 py-1 text-zinc-300" }, fmt(s.mean_m)),
+                  h("td", { className: "px-2 py-1 text-zinc-300" }, fmt(s.median_m)),
+                  h("td", { className: "px-2 py-1 text-zinc-300" }, fmt(s.p95_m)),
+                  h("td", {
+                    className: "px-2 py-1 font-medium",
+                    style: { color: (s.failure_pct || 0) > 10 ? "#f87171" : "#86efac" },
+                  }, s.failure_pct != null ? `${s.failure_pct.toFixed(1)}%` : "—"),
+                );
+              })
+            )
+          )
+        );
+      }
+
+      // ── Main Analytics Dashboard component ───────────────────────────────
+      // ENGINE_API is inherited from the outer script scope:
+      //   const ENGINE_API = window.__IPS_ENGINE_API || "http://localhost:8000";
+      // Do NOT re-declare it here — that was the cause of the 404 (wrong port).
+      function AnalyticsDashboard() {
+
+        // Payload state from /analytics/accuracy
+        const [payload, setPayload]           = useState(null);
+        const [debugInfo, setDebugInfo]       = useState(null);
+        const [mapData, setMapData]           = useState(null);
+        const [error, setError]               = useState(null);
+        const [debugOpen, setDebugOpen]       = useState(false);
+        const [pollCount, setPollCount]       = useState(0);
+
+        // Controls
+        const [gtX, setGtX]                   = useState("0");
+        const [gtY, setGtY]                   = useState("0");
+        const [scenarioOpt, setScenarioOpt]   = useState("");   // filter dropdown
+        const [scenarioTag, setScenarioTag]   = useState("");   // tagging input
+        const [windowS, setWindowS]           = useState(60);
+        const [pollingActive, setPollingActive] = useState(true);
+
+        const pollRef = useRef(null);
+
+        // ── Polling ───────────────────────────────────────────────────────────
+        useEffect(() => {
+          if (!pollingActive) return;
+
+          const fetchAll = async () => {
+            try {
+              const [accRes, dbgRes, mapRes] = await Promise.all([
+                fetch(`${ENGINE_API}/analytics/accuracy?scenario=${encodeURIComponent(scenarioOpt)}&window_s=${windowS}`),
+                fetch(`${ENGINE_API}/analytics/debug`),
+                fetch(`${ENGINE_API}/map?method=trilateration`),
+              ]);
+              if (!accRes.ok) throw new Error(`HTTP ${accRes.status} from /analytics/accuracy`);
+              const accData = await accRes.json();
+
+              // ── Console diagnostics (visible in browser DevTools → Console) ──
+              const methodKeys = Object.keys(accData.methods || {});
+              console.group(`[Analytics poll] methods=${methodKeys.length}  gt=(${accData.ground_truth?.x?.toFixed(2)}, ${accData.ground_truth?.y?.toFixed(2)})`);
+              if (methodKeys.length === 0) {
+                console.warn("[Analytics] payload.methods is EMPTY — no data has been pushed yet");
+              } else {
+                methodKeys.forEach((m) => {
+                  const md = accData.methods[m];
+                  console.log(`  ${m}: n_in_window=${md.n_in_window}  stats.n=${md.stats?.n_samples}  failure=${md.stats?.failure_pct}%`);
+                });
+              }
+
+              if (dbgRes.ok) {
+                const dbg = await dbgRes.json();
+                setDebugInfo(dbg);
+                if (dbg.push_total === 0) {
+                  console.error("[Analytics] push_total=0 — _analytics.push() has never been called. Check that localization is running and _store_decision is being reached.");
+                } else {
+                  console.log(`[Analytics] push_total=${dbg.push_total}  push_skipped=${dbg.push_skipped}  cpp=${dbg.cpp_available}  gt=(${dbg.ground_truth?.x}, ${dbg.ground_truth?.y})`);
+                  Object.entries(dbg.per_method || {}).forEach(([m, md]) => {
+                    const allOutliers = md.n_outliers === md.n_total;
+                    const msg = `  buffer[${m}]: n=${md.n_total}  outliers=${md.n_outliers}  newest_err=${md.newest_err_m}m  age=${md.newest_age_s}s`;
+                    if (allOutliers) console.warn(msg + "  ← ALL OUTLIERS: ground truth position is probably wrong (still at 0,0?)");
+                    else console.log(msg);
+                  });
+                }
+              }
+              console.groupEnd();
+
+              setPayload(accData);
+              setError(null);
+              setPollCount((c) => c + 1);
+
+              if (mapRes.ok) setMapData(await mapRes.json());
+
+              // Sync GT inputs on first load (avoid overwriting user's typed value)
+              if (accData.ground_truth) {
+                setGtX((prev) => prev === "0" ? String(accData.ground_truth.x) : prev);
+                setGtY((prev) => prev === "0" ? String(accData.ground_truth.y) : prev);
+              }
+            } catch (e) {
+              console.error("[Analytics fetch error]", e);
+              setError(e.message);
+            }
+          };
+
+          fetchAll();
+          pollRef.current = setInterval(fetchAll, 600);
+          return () => clearInterval(pollRef.current);
+        }, [pollingActive, scenarioOpt, windowS, ENGINE_API]);
+
+        // ── Apply ground truth ────────────────────────────────────────────────
+        const applyGT = async () => {
+          await fetch(`${ENGINE_API}/analytics/ground_truth`, {
+            method:  "POST",
+            headers: { "Content-Type": "application/json" },
+            body:    JSON.stringify({ x: parseFloat(gtX) || 0, y: parseFloat(gtY) || 0 }),
+          });
+        };
+
+        // ── Set scenario tag ──────────────────────────────────────────────────
+        const applyScenarioTag = async () => {
+          await fetch(`${ENGINE_API}/analytics/scenario`, {
+            method:  "POST",
+            headers: { "Content-Type": "application/json" },
+            body:    JSON.stringify({ scenario: scenarioTag }),
+          });
+        };
+
+        // ── Clear data ────────────────────────────────────────────────────────
+        const clearAll = async () => {
+          await fetch(`${ENGINE_API}/analytics/clear`, { method: "DELETE" });
+          setPayload(null);
+        };
+
+        const methods     = payload?.methods       || {};
+        const gt          = payload?.ground_truth  || { x: 0, y: 0 };
+        const hardCap     = payload?.hard_cap_m    || 10;
+        const scenarios   = payload?.scenarios_present || [];
+        const windowLabel = payload?.time_window_s || windowS;
+        const methodCount = Object.keys(methods).length;
+
+        // ── Render ────────────────────────────────────────────────────────────
+        return h(
+          "div",
+          { className: "h-full overflow-y-auto p-4 space-y-4" },
+
+          // ── Header ─────────────────────────────────────────────────────────
+          h(
+            "div",
+            { className: "flex items-center justify-between flex-wrap gap-2" },
+            h("h1", { className: "text-xl font-bold text-white" }, "📊 Analytics Dashboard"),
+            h(
+              "div",
+              { className: "flex items-center gap-2 text-xs" },
+              methodCount > 0
+                ? h("span", { className: "text-green-400" },
+                    `${methodCount} method${methodCount !== 1 ? "s" : ""} active`)
+                : h("span", { className: "text-zinc-500" }, "No data yet — start localization to populate"),
+              h(
+                "button",
+                {
+                  onClick: () => setPollingActive((p) => !p),
+                  className: `px-2 py-1 rounded text-xs font-medium ${
+                    pollingActive
+                      ? "bg-green-700 hover:bg-green-600 text-white"
+                      : "bg-zinc-700 hover:bg-zinc-600 text-zinc-300"
+                  }`,
+                },
+                pollingActive ? "⏸ Pause" : "▶ Resume"
+              ),
+              h(
+                "button",
+                {
+                  onClick: clearAll,
+                  className: "px-2 py-1 rounded text-xs font-medium bg-red-900 hover:bg-red-700 text-white",
+                },
+                "🗑 Clear All"
+              ),
+            )
+          ),
+
+          // ── Error banner ────────────────────────────────────────────────────
+          error && h(
+            "div",
+            { className: "rounded bg-red-900/50 border border-red-700 px-3 py-2 text-sm text-red-300" },
+            `⚠ Engine unreachable: ${error}`
+          ),
+
+          // ── Debug panel ─────────────────────────────────────────────────────
+          h(
+            "div",
+            { className: "rounded border border-zinc-700 bg-zinc-900/60 text-xs" },
+            // header / toggle
+            h(
+              "button",
+              {
+                onClick: () => setDebugOpen((o) => !o),
+                className: "w-full flex items-center justify-between px-3 py-2 text-zinc-400 hover:text-zinc-200",
+              },
+              h("span", null,
+                `🔬 Debug  •  polls=${pollCount}  `
+                + (debugInfo
+                  ? `push_total=${debugInfo.push_total}  skipped=${debugInfo.push_skipped}  `
+                    + `cpp=${debugInfo.cpp_available ? "✓" : "✗"}  `
+                    + `gt=(${Number(debugInfo.ground_truth?.x).toFixed(2)}, ${Number(debugInfo.ground_truth?.y).toFixed(2)})  `
+                    + `methods=[${(debugInfo.method_keys || []).join(", ") || "none"}]`
+                  : "fetching…")
+              ),
+              h("span", null, debugOpen ? "▲" : "▼"),
+            ),
+            // expandable body
+            debugOpen && h(
+              "div",
+              { className: "border-t border-zinc-700 p-3 space-y-2" },
+
+              // Warning banners for known bad states
+              debugInfo && debugInfo.push_total === 0 && h(
+                "div",
+                { className: "rounded bg-amber-900/50 border border-amber-600 px-3 py-2 text-amber-300" },
+                "⚠ push_total = 0  — No data has reached the analytics engine. ",
+                "Make sure localization is running (POST /poll/start) and decisions are being issued ",
+                "(check /decisions/trilateration for recent entries).",
+              ),
+
+              debugInfo && Object.keys(debugInfo.per_method || {}).length > 0 &&
+              Object.values(debugInfo.per_method).every((md) => md.n_outliers === md.n_total && md.n_total > 0) && h(
+                "div",
+                { className: "rounded bg-amber-900/50 border border-amber-600 px-3 py-2 text-amber-300" },
+                `⚠ All ${Object.keys(debugInfo.per_method).length} method buffer(s) are 100% outliers (error > ${debugInfo.hard_cap_m}m). `,
+                "The Ground Truth position is probably still at (0, 0). ",
+                "Set the correct GT coordinates above and click 'Set'.",
+              ),
+
+              // Per-method buffer table
+              debugInfo && Object.keys(debugInfo.per_method || {}).length > 0 && h(
+                "div",
+                null,
+                h("p", { className: "text-zinc-500 mb-1 font-semibold" }, "Buffer state:"),
+                h(
+                  "table",
+                  { className: "w-full border-collapse text-zinc-300" },
+                  h("thead", null,
+                    h("tr", { className: "text-zinc-500" },
+                      ["Method", "N buf", "Outliers", "Newest err (m)", "Newest pos", "Age (s)", "Scenarios"].map((c) =>
+                        h("th", { key: c, className: "text-left px-2 py-0.5 border-b border-zinc-800" }, c)
+                      )
+                    )
+                  ),
+                  h("tbody", null,
+                    Object.entries(debugInfo.per_method || {}).map(([m, md]) =>
+                      h("tr", { key: m, className: "border-b border-zinc-800/50" },
+                        h("td", { className: "px-2 py-0.5 font-semibold", style: { color: getMethodColor(m) } }, m),
+                        h("td", { className: "px-2 py-0.5" }, md.n_total),
+                        h("td", {
+                          className: "px-2 py-0.5",
+                          style: { color: md.n_outliers === md.n_total && md.n_total > 0 ? "#f87171" : "#86efac" },
+                        }, `${md.n_outliers} / ${md.n_total}`),
+                        h("td", { className: "px-2 py-0.5" }, md.newest_err_m != null ? md.newest_err_m.toFixed(4) : "—"),
+                        h("td", { className: "px-2 py-0.5" },
+                          md.newest_pos ? `(${md.newest_pos[0]}, ${md.newest_pos[1]})` : "—"),
+                        h("td", { className: "px-2 py-0.5" }, md.newest_age_s ?? "—"),
+                        h("td", { className: "px-2 py-0.5 text-zinc-500" },
+                          (md.scenarios || []).join(", ") || "(none)"),
+                      )
+                    )
+                  )
+                )
+              ),
+
+              // Raw JSON toggle
+              h(
+                "details",
+                { className: "mt-2" },
+                h("summary", { className: "text-zinc-500 cursor-pointer hover:text-zinc-300" },
+                  "Raw /analytics/debug JSON"),
+                h(
+                  "pre",
+                  {
+                    className: "mt-1 p-2 rounded bg-zinc-950 text-zinc-400 overflow-x-auto max-h-64 text-xs leading-relaxed",
+                  },
+                  debugInfo ? JSON.stringify(debugInfo, null, 2) : "no data yet"
+                )
+              ),
+
+              h(
+                "details",
+                { className: "mt-1" },
+                h("summary", { className: "text-zinc-500 cursor-pointer hover:text-zinc-300" },
+                  "Raw /analytics/accuracy JSON (methods block)"),
+                h(
+                  "pre",
+                  {
+                    className: "mt-1 p-2 rounded bg-zinc-950 text-zinc-400 overflow-x-auto max-h-64 text-xs leading-relaxed",
+                  },
+                  payload ? JSON.stringify(payload.methods, null, 2) : "no data yet"
+                )
+              ),
+            )
+          ),
+
+          // ── Controls bar ────────────────────────────────────────────────────
+          h(
+            "div",
+            { className: "grid grid-cols-1 md:grid-cols-3 gap-3" },
+
+            // Ground truth setter
+            h(
+              "div",
+              { className: "bg-zinc-800 rounded-lg p-3 space-y-2" },
+              h("p", { className: "text-xs font-semibold text-zinc-300 uppercase tracking-wide" },
+                "📍 Ground Truth Position"),
+              h(
+                "div",
+                { className: "flex items-center gap-2" },
+                h("label", { className: "text-xs text-zinc-400 w-4" }, "X"),
+                h("input", {
+                  type: "number", step: "0.01", value: gtX,
+                  onChange: (e) => setGtX(e.target.value),
+                  className: "flex-1 bg-zinc-700 text-white text-xs rounded px-2 py-1 w-0",
+                }),
+                h("label", { className: "text-xs text-zinc-400 w-4" }, "Y"),
+                h("input", {
+                  type: "number", step: "0.01", value: gtY,
+                  onChange: (e) => setGtY(e.target.value),
+                  className: "flex-1 bg-zinc-700 text-white text-xs rounded px-2 py-1 w-0",
+                }),
+                h(
+                  "button",
+                  {
+                    onClick: applyGT,
+                    className: "px-2 py-1 bg-blue-700 hover:bg-blue-600 text-white text-xs rounded",
+                  },
+                  "Set"
+                ),
+              ),
+              h("p", { className: "text-xs text-zinc-500" },
+                `Current GT: (${Number(gt.x).toFixed(2)}, ${Number(gt.y).toFixed(2)}) m`),
+            ),
+
+            // Scenario tagging
+            h(
+              "div",
+              { className: "bg-zinc-800 rounded-lg p-3 space-y-2" },
+              h("p", { className: "text-xs font-semibold text-zinc-300 uppercase tracking-wide" },
+                "🏷 Tag Scenario"),
+              h(
+                "div",
+                { className: "flex items-center gap-2" },
+                h("input", {
+                  type: "text",
+                  value: scenarioTag,
+                  placeholder: "e.g. LOS, NLOS, Facing North",
+                  onChange: (e) => setScenarioTag(e.target.value),
+                  className: "flex-1 bg-zinc-700 text-white text-xs rounded px-2 py-1",
+                }),
+                h(
+                  "button",
+                  {
+                    onClick: applyScenarioTag,
+                    className: "px-2 py-1 bg-purple-700 hover:bg-purple-600 text-white text-xs rounded",
+                  },
+                  "Tag"
+                ),
+              ),
+              h("p", { className: "text-xs text-zinc-500" },
+                `Active tag: ${payload?.current_scenario || "(none)"}`),
+            ),
+
+            // CDF filter + window
+            h(
+              "div",
+              { className: "bg-zinc-800 rounded-lg p-3 space-y-2" },
+              h("p", { className: "text-xs font-semibold text-zinc-300 uppercase tracking-wide" },
+                "🔍 CDF Filters"),
+              h(
+                "div",
+                { className: "flex items-center gap-2" },
+                h("label", { className: "text-xs text-zinc-400 shrink-0" }, "Scenario:"),
+                h(
+                  "select",
+                  {
+                    value: scenarioOpt,
+                    onChange: (e) => setScenarioOpt(e.target.value),
+                    className: "flex-1 bg-zinc-700 text-white text-xs rounded px-2 py-1",
+                  },
+                  h("option", { value: "" }, "All scenarios"),
+                  ...scenarios.map((s) => h("option", { key: s, value: s }, s)),
+                ),
+              ),
+              h(
+                "div",
+                { className: "flex items-center gap-2" },
+                h("label", { className: "text-xs text-zinc-400 shrink-0" },
+                  `Window: ${windowLabel}s`),
+                h("input", {
+                  type: "range", min: 10, max: 300, step: 10,
+                  value: windowS,
+                  onChange: (e) => setWindowS(Number(e.target.value)),
+                  className: "flex-1 accent-blue-500",
+                }),
+              ),
+            ),
+          ),
+
+          // ── Charts row ──────────────────────────────────────────────────────
+          h(
+            "div",
+            { className: "grid grid-cols-1 xl:grid-cols-2 gap-4" },
+
+            // CDF chart panel
+            h(
+              "div",
+              { className: "bg-zinc-800 rounded-lg p-3" },
+              h(
+                "div",
+                { className: "flex items-center justify-between mb-2" },
+                h("h2", { className: "text-sm font-semibold text-white" },
+                  "Cumulative Distribution Function"),
+                h("span", { className: "text-xs text-zinc-500" },
+                  `X-axis capped at ${hardCap} m (outliers → failure bucket)`),
+              ),
+              methodCount === 0
+                ? h("div", { className: "flex items-center justify-center h-72 text-zinc-600 text-sm" },
+                    "Waiting for localization data…")
+                : h(CdfChart, { methods, hardCapM: hardCap }),
+            ),
+
+            // Scatter map panel
+            h(
+              "div",
+              { className: "bg-zinc-800 rounded-lg p-3" },
+              h(
+                "div",
+                { className: "flex items-center justify-between mb-2" },
+                h("h2", { className: "text-sm font-semibold text-white" },
+                  "Live Position Scatter"),
+                h("span", { className: "text-xs text-zinc-500" },
+                  "🟡 GT  •  dots = latest estimate per method"),
+              ),
+              h(
+                "div",
+                { className: "rounded overflow-hidden", style: { aspectRatio: "14/10" } },
+                h(ScatterMap, { methods, groundTruth: gt, mapData }),
+              ),
+              // Method legend
+              h(
+                "div",
+                { className: "flex flex-wrap gap-2 mt-2" },
+                Object.keys(methods).map((m) =>
+                  h(
+                    "span",
+                    {
+                      key: m,
+                      className: "text-xs px-2 py-0.5 rounded-full font-medium",
+                      style: {
+                        background: getMethodColor(m) + "33",
+                        color: getMethodColor(m),
+                        border: `1px solid ${getMethodColor(m)}66`,
+                      },
+                    },
+                    (METHOD_INFO[m] || {}).label || m,
+                  )
+                ),
+              ),
+            ),
+          ),
+
+          // ── Stats table ─────────────────────────────────────────────────────
+          h(
+            "div",
+            { className: "bg-zinc-800 rounded-lg p-3" },
+            h(
+              "div",
+              { className: "flex items-center justify-between mb-2" },
+              h("h2", { className: "text-sm font-semibold text-white" },
+                "Algorithm Comparison Summary"),
+              h("span", { className: "text-xs text-zinc-500" },
+                `Failure = error > ${hardCap} m  •  Stats over all scenarios / full buffer`),
+            ),
+            h(StatsTable, { methods }),
+          ),
+
+          // ── Time normalisation note ─────────────────────────────────────────
+          h(
+            "p",
+            { className: "text-xs text-zinc-600 text-center pb-2" },
+            "CDF curves are time-normalised: all methods are sub-sampled to the same observation count within the selected window. ",
+            "This prevents faster algorithms (e.g. ToF at 10 Hz) from appearing artificially smoother than slower ones (RSSI at 2 Hz).",
+          ),
+        );
+      }
+
+      // ═════════════════════════════════════════════════════════════════════
       // ESP FLASH PAGE
       // ═════════════════════════════════════════════════════════════════════
 
@@ -9110,6 +9832,7 @@
           page === "devices"   && h(DeviceTables),
           page === "logs"      && h(LogsPage),
           page === "espflash"  && h(EspFlashPage),
+          page === "analytics" && h(AnalyticsDashboard),
         );
       }
 
