@@ -57,7 +57,9 @@ class Anchor(Base):
     enabled:          Mapped[bool]           = mapped_column(Boolean, default=True)
 
     # Connectivity status — updated by the polling engine
-    status:           Mapped[str]            = mapped_column(String(20), default="offline")
+    # Values: "online" | "trying" | "offline" | "unknown"
+    # "trying" = was online, first ping failed, retrying (up to 4 more attempts)
+    status:           Mapped[str]            = mapped_column(String(20), default="unknown")
 
     # Inventory / lifecycle status
     device_status:    Mapped[str]            = mapped_column(String(50), default="in_stock")
@@ -65,7 +67,11 @@ class Anchor(Base):
     # Administrative flags (list of strings from VALID_FLAGS)
     flags:            Mapped[list]           = mapped_column(JSON, default=list)
 
+    # last_polled: last time a ping attempt was made (success or failure)
     last_polled:      Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # last_reached: last time device responded to a ping (only updated on success)
+    last_reached:     Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
     created_at:       Mapped[datetime]       = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

@@ -107,6 +107,56 @@ def ack_engine_log(log_id: int, body: EngineLogAck, db: Session = Depends(get_db
     return entry
 
 
+@router.post("/engine-logs/session-start", response_model=EngineLogOut, status_code=201)
+def write_session_start(db: Session = Depends(get_db)):
+    """
+    Write a sentinel 'session started' marker to the engine log.
+    Called by desktop_app.py on every clean startup so the user can see
+    exactly where the current session begins — any connectivity alerts above
+    this entry are from a previous run and can be safely ignored or cleared.
+    """
+    entry = EngineLog(
+        level    = "info",
+        source   = "system",
+        message  = "── App session started ──",
+        acknowledged = True,   # pre-acked so it doesn't pollute unread counts
+    )
+    db.add(entry)
+    db.commit()
+    db.refresh(entry)
+    return entry
+
+
+@router.post("/client-log", status_code=201)
+def write_client_log(
+    level:   str,
+    message: str,
+    source:  str = "client",
+    meta:    dict | None = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Write a log entry on behalf of the frontend.
+    Used for client-detected events (backend disconnect/reconnect, engine
+    connectivity changes) that the frontend witnesses but the backend cannot.
+    Level must be one of: info | warn | alert | config | security.
+    """
+    valid = {"info", "warn", "alert", "config", "security"}
+    if level not in valid:
+        level = "info"
+    entry = EngineLog(
+        level     = level,
+        source    = source,
+        message   = message,
+        meta      = meta or {},
+        timestamp = datetime.now(timezone.utc),
+    )
+    db.add(entry)
+    db.commit()
+    db.refresh(entry)
+    return {"ok": True, "id": entry.id}
+
+
 @router.delete("/engine-logs", status_code=204)
 def clear_engine_logs(
     older_than_hours: Optional[int] = Query(None, ge=0),
