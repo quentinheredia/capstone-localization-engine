@@ -1606,3 +1606,236 @@ class ToFWrapper:
         if n_anchors == 2:
             return 0.45
         return 0.2
+
+
+
+class AnchorPosEngineWrapper:
+    """WiFi RSSI anchor-positioning engine wrapper.
+
+    Wraps ``capstone_core.AnchorPosEngine`` — the C++ gradient-descent
+    trilateration engine with live P0 self-calibration and per-anchor
+    confidence weighting.
+
+    Architecture
+    ------------
+    * **Target scanning** — every observation of a target device (SSID) by
+      a scanning AP arrives via ``process_cycle(rssi_map)``.  The batch
+      ingestion path ``AnchorPosEngine.feed_rssi_batch`` delivers the full
+      ``{ap_id: {device_id: rssi_dbm}}`` dict under one mutex lock.
+    * **Inter-anchor calibration** — APs that observe *each other* in the
+      RSSI map are detected automatically (``dev_id in _ap_ids``) and routed
+      to ``feed_inter_anchor_batch``.  This keeps the engine's self-calibrated
+      P0 values current without any extra Python work.
+    * **Position output** — ``get_all_positions()`` returns one
+      ``AnchorPosResult`` per tracked device; these are converted to
+      ``LocalizationDecision`` objects using point-in-polygon room lookup.
+
+    Configuration (config.yaml)
+    ---------------------------
+    Under ``system.anchor_positioning``:
+
+    .. code-block:: yaml
+
+        system:
+          rolling_average_window: 5   # shared with SMA engine
+          anchor_positioning:
+            max_dist_m:   15.0        # gate on max credible distance
+            rssi_at_1m:  -60.0        # module-wide P0 fallback (dBm)
+            path_loss_n:   2.5        # module-wide path-loss exponent fallback
+            anchors:                  # per-AP overrides (optional)
+              AP1:
+                rssi_at_1m:  -58.0
+                path_loss_n:  2.3
+              AP2:
+                rssi_at_1m:  -62.0
+
+    Path-loss parameters that are *not* overridden fall back to the
+    module-level values, which themselves fall back to the class defaults
+    ``_DEFAULT_P0`` and ``_DEFAULT_N``.
+    """
+
+    _DEFAULT_P0: float = -60.0
+    _DEFAULT_N:  float =  2.5
+
+    # ------------------------------------------------------------------
+    # Construction
+    # ------------------------------------------------------------------
+
+    def __init__(self, env: FloorEnvironment, cfg: dict) -> None:
+        """
+        Parameters
+        ----------
+        env : FloorEnvironment
+            Room geometry, AP positions, target profiles.
+        cfg : dict
+            Raw config dict (from config.yaml).  Reads
+            ``system.anchor_positioning.*``.
+        """
+        _require_cpp()
+
+        sys_cfg  = cfg.get("system", {})
+        anch_cfg = sys_cfg.get("anchor_positioning", {})
+        per_ap   = anch_cfg.get("anchors", {})   # keyed by AP id
+
+        default_p0 = float(anch_cfg.get("rssi_at_1m",  self._DEFAULT_P0))
+        default_n  = float(anch_cfg.get("path_loss_n", self._DEFAULT_N))
+        max_dist   = float(anch_cfg.get("max_dist_m",  15.0))
+        window     = int(sys_cfg.get("rolling_average_window", 5))
+
+        self._env          = env
+        self._campus_id    = env.campus_id
+        self._building_id  = env.building_id
+        self._floor_id     = env.floor_id
+
+        # Sets used to split rssi_map into target observations vs. IA observations
+        self._ap_ids       = set(env.wifi_aps.keys())
+        self._target_ssids = {t.ssid for t in env.targets} if env.targets else set()
+
+        # Build AnchorDef list — one per configured AP
+        anchors = [
+            cc.AnchorDef(
+                id          = ap.id,
+                x           = float(ap.x),
+                y           = float(ap.y),
+                rssi_at_1m  = float(per_ap.get(ap.id, {}).get("rssi_at_1m",  default_p0)),
+                path_loss_n = float(per_ap.get(ap.id, {}).get("path_loss_n", default_n)),
+            )
+            for ap in env.wifi_aps.values()
+        ]
+
+        self._engine = cc.AnchorPosEngine(
+            window_size = window,
+            max_dist_m  = max_dist,
+            room_w      = float(env.width_m),
+            room_h      = float(env.height_m),
+        )
+        self._engine.set_anchors(anchors)
+
+        _log.debug(
+            "AnchorPosEngineWrapper ready: %d anchor(s), window=%d, "
+            "max_dist=%.1f m, default P0=%.1f dBm, n=%.2f",
+            len(anchors), window, max_dist, default_p0, default_n,
+        )
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def process_cycle(
+        self,
+        raw_rssi:    RSSIMap,
+        scan_number: int             = 0,
+        timestamp:   Optional[str]   = None,
+        decision_id: Optional[str]   = None,
+    ) -> List[LocalizationDecision]:
+        """Ingest one RSSI scan and return current position estimates.
+
+        Parameters
+        ----------
+        raw_rssi : RSSIMap
+            ``{ap_id: {device_id: rssi_dbm}}`` — the standard scan output
+            from ``TelnetPipe`` / ``RSSIFilter``.
+        scan_number : int
+            Monotonic scan counter, forwarded into ``LocalizationDecision``.
+        timestamp : str, optional
+            ISO-8601 string.  Defaults to ``_now()`` from app.py context if
+            not supplied (wrapper imports it lazily).
+        decision_id : str, optional
+            Caller-supplied UUID for the batch; auto-generated if omitted.
+
+        Returns
+        -------
+        List[LocalizationDecision]
+            One entry per tracked device with at least 2 anchor observations.
+        """
+        if timestamp is None:
+            try:
+                from app import _now
+                timestamp = _now()
+            except ImportError:
+                from datetime import datetime, timezone
+                timestamp = datetime.now(timezone.utc).isoformat()
+
+        if decision_id is None:
+            import uuid
+            decision_id = str(uuid.uuid4())
+
+        # ── Split scan map into target observations and inter-anchor obs ──
+        target_map: RSSIMap = {}
+        ia_map:     RSSIMap = {}
+
+        for ap_id, devices in raw_rssi.items():
+            for dev_id, rssi in devices.items():
+                if dev_id in self._target_ssids:
+                    target_map.setdefault(ap_id, {})[dev_id] = float(rssi)
+                elif dev_id in self._ap_ids:
+                    ia_map.setdefault(ap_id, {})[dev_id] = float(rssi)
+
+        # ── Feed both streams into the C++ engine ─────────────────────────
+        if target_map:
+            self._engine.feed_rssi_batch(target_map)
+        if ia_map:
+            self._engine.feed_inter_anchor_batch(ia_map)
+
+        # ── Retrieve positions and convert to LocalizationDecision ─────────
+        positions = self._engine.get_all_positions()   # {target_id: AnchorPosResult}
+
+        decisions: List[LocalizationDecision] = []
+        for target_id, result in positions.items():
+            if result.confidence <= 0.0:
+                continue   # not enough data yet
+
+            room_id = _find_room(result.x, result.y, self._env.rooms)
+
+            d = LocalizationDecision(
+                decision_id = decision_id,
+                device_id   = target_id,
+                campus_id   = self._campus_id,
+                building_id = self._building_id,
+                floor_id    = self._floor_id,
+                room_id     = room_id,
+                timestamp   = timestamp,
+                confidence  = result.confidence,
+                rssi_vector = {},   # not a per-AP vector — engine handles smoothing
+                x           = result.x,
+                y           = result.y,
+                scan_number = scan_number,
+            )
+            decisions.append(d)
+
+        return decisions
+
+    # ------------------------------------------------------------------
+    # Pass-through diagnostics (for FastAPI endpoints / debug routes)
+    # ------------------------------------------------------------------
+
+    def get_all_positions(self) -> dict:
+        """Return cached position dict without re-running trilateration.
+
+        Returns ``{target_id: {x, y, confidence, n_anchors}}`` — serialisable
+        directly as JSON in FastAPI response models.
+        """
+        return {
+            tid: r.to_dict()
+            for tid, r in self._engine.get_all_positions().items()
+        }
+
+    def get_p0_calibration(self) -> dict:
+        """Return live P0 calibration values for all anchors.
+
+        Useful for the diagnostics dashboard to verify self-calibration
+        is converging.  Returns ``{anchor_id: p0_dbm}``.
+        """
+        return dict(self._engine.get_all_p0())
+
+    def get_anchor_weights(self) -> dict:
+        """Return current per-anchor confidence weights ``{anchor_id: weight}``."""
+        return dict(self._engine.get_anchor_weights())
+
+    def clear_target(self, target_id: str) -> None:
+        """Evict all cached state for *target_id* from the C++ engine."""
+        self._engine.clear_target(target_id)
+
+    def clear_all_targets(self) -> None:
+        """Evict all target-device state.  Calibration data is preserved."""
+        self._engine.clear_all_targets()

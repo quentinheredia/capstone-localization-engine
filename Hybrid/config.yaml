@@ -34,15 +34,15 @@ targets:
   radio_override:
     rssi_at_1m_dbm: -22.0
     path_loss_n: 4.0
-- ssid: Tag3
-  radio_override:
-    rssi_at_1m_dbm: -22.0
-    path_loss_n: 3.0
 - ssid: Tag2
   radio_override:
     rssi_at_1m_dbm: -22.0
     path_loss_n: 3.0
 - ssid: Tag1
+  radio_override:
+    rssi_at_1m_dbm: -22.0
+    path_loss_n: 3.0
+- ssid: Tag3
   radio_override:
     rssi_at_1m_dbm: -22.0
     path_loss_n: 3.0

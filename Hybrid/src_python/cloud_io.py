@@ -230,6 +230,94 @@ def read_csv_decisions(
 
 
 # ---------------------------------------------------------------------------
+# Analytics accuracy CSV  (one row per push() call from AccuracyAnalytics)
+# ---------------------------------------------------------------------------
+
+# Column order is chosen for readability in spreadsheet tools:
+#   human timestamp first, then method, coords, error, flags.
+_CSV_HEADERS_ANALYTICS: List[str] = [
+    "timestamp",        # ISO-8601 UTC  e.g. 2026-04-01T13:45:02.123Z
+    "timestamp_ms",     # Unix epoch milliseconds (exact, for sorting / join)
+    "method",           # algorithm key: rssi | raw | kalman | fp | gp | tof
+    "scenario",         # observer-tagged label: LOS | NLOS | Facing North | …
+    "est_x",            # estimated X coordinate (metres)
+    "est_y",            # estimated Y coordinate (metres)
+    "gt_x",             # ground truth X at time of push (metres)
+    "gt_y",             # ground truth Y at time of push (metres)
+    "error_m",          # Euclidean error, hard-capped at 10 m
+    "raw_error_m",      # uncapped Euclidean error (useful for outlier analysis)
+    "is_outlier",       # 1 if raw_error_m > 10 m, 0 otherwise
+]
+
+
+def log_analytics_sample_to_csv(
+    method:      str,
+    est_x:       float,
+    est_y:       float,
+    gt_x:        float,
+    gt_y:        float,
+    error_m:     float,
+    raw_error_m: float,
+    is_outlier:  bool,
+    scenario:    str,
+    timestamp_ms: int,
+    csv_path:    str = "analytics_log.csv",
+) -> bool:
+    """
+    Append one accuracy sample to the analytics CSV log.
+
+    Called by AccuracyAnalytics.push() immediately after every accepted
+    estimate, so the CSV grows in real time alongside the in-memory buffer.
+    The file is created with the correct header row on the first write.
+
+    Parameters
+    ----------
+    method        : algorithm short-key ("rssi", "kalman", "tof", …)
+    est_x / est_y : estimated position in metres
+    gt_x / gt_y   : ground truth position at time of push
+    error_m       : Euclidean error capped at ACCURACY_HARD_CAP_M
+    raw_error_m   : uncapped Euclidean error
+    is_outlier    : True when raw_error_m > ACCURACY_HARD_CAP_M
+    scenario      : observer label (may be empty string)
+    timestamp_ms  : Unix epoch milliseconds
+    csv_path      : destination file (created if it does not exist)
+    """
+    from datetime import datetime, timezone  # local import — avoid circular
+    try:
+        ts_iso = datetime.fromtimestamp(
+            timestamp_ms / 1000.0, tz=timezone.utc
+        ).strftime("%Y-%m-%dT%H:%M:%S.") + f"{timestamp_ms % 1000:03d}Z"
+    except Exception:
+        ts_iso = ""
+
+    row = [
+        ts_iso,
+        timestamp_ms,
+        method,
+        scenario,
+        f"{est_x:.4f}",
+        f"{est_y:.4f}",
+        f"{gt_x:.4f}",
+        f"{gt_y:.4f}",
+        f"{error_m:.4f}",
+        f"{raw_error_m:.4f}",
+        1 if is_outlier else 0,
+    ]
+
+    try:
+        file_exists = os.path.isfile(csv_path)
+        with open(csv_path, mode="a", newline="", encoding="utf-8") as fh:
+            writer = csv.writer(fh)
+            if not file_exists:
+                writer.writerow(_CSV_HEADERS_ANALYTICS)
+            writer.writerow(row)
+        return True
+    except Exception as exc:
+        log.error("cloud_io: analytics CSV write failed (%s): %s", csv_path, exc)
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Radio map (fingerprinting)
 # ---------------------------------------------------------------------------
 

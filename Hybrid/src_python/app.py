@@ -49,11 +49,12 @@ from models import (
     select_location,
 )
 from engine_wrappers import (
-    RSSIEngineWrapper, RawRSSIEngineWrapper, KalmanRSSIEngineWrapper,
+    AnchorPosEngineWrapper, RSSIEngineWrapper, RawRSSIEngineWrapper, KalmanRSSIEngineWrapper,
     FingerprintWrapper, SGPWrapper, ToFWrapper,
 )
 from data_pipes import TelnetPipe, MQTTPipe
 import cloud_io
+from accuracy_analytics import AccuracyAnalytics
 
 # ---------------------------------------------------------------------------
 # Logging — custom CONFIG level (15, between DEBUG=10 and INFO=20)
@@ -87,6 +88,16 @@ log = logging.getLogger("app")
 # Startup / shutdown lifecycle (must be defined before FastAPI() is called)
 # ---------------------------------------------------------------------------
 _poll_task: Optional[asyncio.Task] = None
+
+# Analytics Dashboard — one singleton, lives for the entire process lifetime.
+# Initialised here so it is available even before a config is loaded, which
+# lets the frontend set a ground truth immediately after opening.
+# The CSV path defaults to analytics_log.csv in the working directory; it is
+# updated to the configured path as soon as _apply_cfg() runs.
+_analytics: AccuracyAnalytics = AccuracyAnalytics(
+    max_buf  = 500,
+    csv_path = "analytics_log.csv",
+)
 
 
 @asynccontextmanager
@@ -147,6 +158,7 @@ _state: Dict[str, Any] = {
     "gp_decisions":     [],    # Sparse GP verdicts
     "ble_decisions":    [],    # BLE (stub — populated externally)
     "tof_decisions":    [],    # ToF trilateration verdicts
+    "anchor_decisions": [],    # Anchor-pos C++ trilateration verdicts
     # Latest position per device per method
     "rssi_positions":    {},
     "raw_positions":     {},
@@ -154,6 +166,7 @@ _state: Dict[str, Any] = {
     "fp_positions":      {},
     "gp_positions":      {},
     "tof_positions":     {},
+    "anchor_positions":  {},
     "device_status": {},     # {device_id: {reachable, last_scan}}
     "raw":           None,   # last RawSnapshot dict
     "logs":          [],     # List[{timestamp, severity, device_id, message}]
@@ -218,6 +231,13 @@ def _apply_cfg(
     values come from config.yaml's edge_* keys.  Pass explicit values when
     calling from a future location-selector endpoint or CLI flag.
     """
+    # ── Update analytics CSV path from config ──────────────────────────────
+    _csv_analytics = cfg.get("cloud", {}).get(
+        "csv_analytics_log_path", "analytics_log.csv"
+    )
+    _analytics.set_csv_path(_csv_analytics)
+    log.info("Analytics CSV → %s", _csv_analytics)
+
     try:
         env = select_location(cfg, campus_id, building_id, floor_id)
         _state["env"] = env
@@ -282,6 +302,23 @@ def _store_decision(d: LocalizationDecision, method_key: str) -> None:
     ring.append(payload)
     if len(ring) > MAX_DECISIONS:
         _state[method_key] = ring[-MAX_DECISIONS:]
+
+    # ── Feed Analytics Dashboard ──────────────────────────────────────────────
+    # Only push when the decision has valid coordinates (some stubs have None).
+    _method_short = method_key.replace("_decisions", "")
+    if d.x is not None and d.y is not None:
+        _analytics.push(_method_short, d.x, d.y)
+        log.debug(
+            "[analytics_feed] method=%s  x=%.3f  y=%.3f  "
+            "push_total=%d  push_skipped=%d",
+            _method_short, d.x, d.y,
+            _analytics._push_total, _analytics._push_skipped,
+        )
+    else:
+        log.warning(
+            "[analytics_feed] SKIPPED %s — d.x=%s d.y=%s (None coordinates)",
+            _method_short, d.x, d.y,
+        )
 
     pos_key = method_key.replace("decisions", "positions")
     if pos_key in _state:
@@ -428,6 +465,19 @@ async def _poll_loop() -> None:
     else:
         _msg = "ToF disabled (no tof_anchors configured)"
         log.config(_msg); _append_log("CONFIG", "", _msg)
+
+    # Anchor-pos wrapper — C++ gradient-descent trilateration with live P0 calibration
+    anchor_wrapper: Optional[AnchorPosEngineWrapper] = None
+    try:
+        anchor_wrapper = AnchorPosEngineWrapper(env, cfg)
+        _msg = (
+            f"AnchorPos enabled  ({len(env.wifi_aps)} anchor(s): "
+            f"{', '.join(env.wifi_aps.keys())})"
+        )
+        log.config(_msg); _append_log("CONFIG", "", _msg)
+    except Exception as _e:
+        _msg = f"[Poll startup] AnchorPosEngineWrapper unavailable: {type(_e).__name__}: {_e}"
+        log.warning(_msg); _append_log("WARN", "", _msg)
 
     # Build pipes
     try:
@@ -632,6 +682,19 @@ async def _poll_loop() -> None:
                                 "timestamp": _ts,
                             }
 
+            # ── Anchor-pos trilateration preview (every scan cycle) ──────
+            if anchor_wrapper:
+                for d in anchor_wrapper.process_cycle(rssi_map, scan_number=n):
+                    _anch_msg = (
+                        f"[Scan #{n}][ANCH] {d.device_id} → {d.room_id}"
+                        f"  conf={d.confidence:.2f}  pos=({d.x:.1f}, {d.y:.1f})"
+                    )
+                    log.config(_anch_msg)
+                    _append_log("CONFIG", d.device_id, _anch_msg)
+                    _state["anchor_positions"][d.device_id] = {
+                        "x": d.x, "y": d.y, "room_id": d.room_id, "timestamp": _ts,
+                    }
+
             scan_buffer.append(rssi_map)
 
             # ── Verdict window ─────────────────────────────────────────────
@@ -639,7 +702,7 @@ async def _poll_loop() -> None:
                 await _run_verdict(
                     scan_buffer, env,
                     rssi_wrapper, raw_wrapper, kalman_wrapper,
-                    fp_wrapper, gp_wrapper, tof_wrapper,
+                    fp_wrapper, gp_wrapper, tof_wrapper, anchor_wrapper,
                     target_ssids, required_ap_ids, min_aps_for_valid, n,
                 )
                 scan_buffer  = []
@@ -668,6 +731,7 @@ async def _run_verdict(
     fp_wrapper:        Optional[FingerprintWrapper],
     gp_wrapper:        Optional[SGPWrapper],
     tof_wrapper:       Optional[ToFWrapper],
+    anchor_wrapper:    Optional[AnchorPosEngineWrapper],
     target_ssids:      List[str],
     required_ap_ids:   set,
     min_aps_for_valid: int,
@@ -676,7 +740,7 @@ async def _run_verdict(
     """
     Aggregate the scan buffer and emit final localization decisions.
     Runs SMA trilateration, Raw trilateration, Kalman trilateration,
-    fingerprinting, Sparse GP, and ToF (when available).
+    fingerprinting, Sparse GP, ToF, and Anchor-pos (when available).
     """
     timestamp = _now()
     log.config("=" * 55 + "  VERDICT")
@@ -839,6 +903,31 @@ async def _run_verdict(
                 scan_number = scan_counter,
             )
             _store_decision(d, "tof_decisions")
+
+    # ── Anchor-pos verdict (batch over all targets tracked by C++ engine) ────
+    if anchor_wrapper:
+        dec_id = str(uuid.uuid4())
+        # Feed the averaged scan buffer so the engine's rolling window sees
+        # the same smoothed signal that the preview blocks used per-scan,
+        # then emit one verdict decision per tracked device.
+        for ssid in target_ssids:
+            averaged_for_ssid: RSSIMap = {}
+            complete_scans = [
+                s for s in scan_buffer
+                if sum(1 for ap, devs in s.items() if ssid in devs) >= min_aps_for_valid
+            ]
+            for ap_id in required_ap_ids:
+                vals = [s[ap_id][ssid] for s in complete_scans if ssid in s.get(ap_id, {})]
+                if vals:
+                    averaged_for_ssid.setdefault(ap_id, {})[ssid] = sum(vals) / len(vals)
+
+            for d in anchor_wrapper.process_cycle(
+                averaged_for_ssid,
+                scan_number = scan_counter,
+                timestamp   = timestamp,
+                decision_id = dec_id,
+            ):
+                _store_decision(d, "anchor_decisions")
 
 
 def _point_in_polygon(x: float, y: float, poly: list) -> bool:
@@ -1018,6 +1107,125 @@ def get_decisions_tof(limit: int = Query(50, ge=1, le=500)):
     """ToF trilateration decisions from ESP32-S3 FTM ranging via MQTT."""
     items = _state["tof_decisions"][-limit:]
     return {"method": "tof", "count": len(items), "items": items}
+
+
+# ── Analytics Dashboard ───────────────────────────────────────────────────────
+
+class _GTBody(dict):
+    pass  # see Pydantic-free inline validation below
+
+
+@app.get("/analytics/debug")
+def get_analytics_debug():
+    """
+    Diagnostic endpoint for the Analytics Dashboard.
+
+    Returns a detailed snapshot of the internal analytics state so you can
+    confirm that data is flowing from decisions → AccuracyEngine → payload.
+
+    Key fields
+    ----------
+    push_total      : total calls to _analytics.push() that passed all guards
+    push_skipped    : calls dropped because coordinates were None or NaN
+    method_keys     : methods that have at least one sample in their buffer
+    per_method      : per-method buffer size, outlier count, newest error, etc.
+    ground_truth    : current reference position (default 0, 0)
+    cpp_available   : whether the compiled C++ engine is being used
+
+    Typical healthy output when localization is running::
+
+        {
+          "push_total": 47,
+          "push_skipped": 0,
+          "method_keys": ["kalman", "raw", "rssi"],
+          "per_method": {
+            "rssi": {"n_total": 17, "n_outliers": 3, "newest_age_s": 1.2,
+                     "newest_err_m": 1.432, "newest_pos": [3.1, 7.8]},
+            ...
+          },
+          "ground_truth": {"x": 0.0, "y": 0.0}   ← set this if it's (0,0)!
+        }
+
+    If push_total == 0 after running for a while, _store_decision is not
+    calling _analytics.push() — check that d.x and d.y are not None.
+
+    If n_outliers == n_total for every method, all errors are > hard_cap_m
+    (10 m).  The CDF will be flat at 0% — set the ground truth position first.
+    """
+    return _analytics.debug_info()
+
+
+@app.get("/analytics/accuracy")
+def get_analytics_accuracy(
+    scenario: str = Query("", description="Filter CDF to this scenario label (empty = all)"),
+    window_s: float = Query(60.0, ge=5.0, le=600.0, description="Rolling time window for CDF normalisation"),
+):
+    """
+    Return the Analytics Dashboard payload.
+
+    The payload contains:
+      - ground_truth {x, y}
+      - per-method CDF curves (time-normalised, scenario-filtered)
+      - per-method summary statistics (mean, median, p95, failure %)
+      - per-method scatter dots (last 40 estimates in window)
+      - scenarios_present list for populating the UI dropdown
+      - hard_cap_m constant
+
+    All methods that have received at least one decision since startup are
+    included automatically — no registration step required.
+    """
+    return _analytics.build_payload(scenario_filter=scenario, time_window_s=window_s)
+
+
+@app.post("/analytics/ground_truth")
+async def set_analytics_ground_truth(body: Dict[str, Any]):
+    """
+    Set the reference position for error calculation.
+
+    Body: {"x": float, "y": float}
+    Coordinates must be in the same metre-scale frame as the localization output.
+    """
+    x = body.get("x")
+    y = body.get("y")
+    if x is None or y is None:
+        raise HTTPException(400, "Body must contain numeric 'x' and 'y' fields")
+    try:
+        x, y = float(x), float(y)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "'x' and 'y' must be numbers")
+    _analytics.set_ground_truth(x, y)
+    log.info("Analytics: ground truth set to (%.3f, %.3f)", x, y)
+    return {"ok": True, "ground_truth": {"x": x, "y": y}}
+
+
+@app.post("/analytics/scenario")
+async def set_analytics_scenario(body: Dict[str, Any]):
+    """
+    Tag future localization decisions with a scenario label.
+
+    Body: {"scenario": str}
+    Examples: "LOS", "NLOS", "Facing North", "Body Blocking AP"
+    Pass an empty string to clear the current tag.
+    """
+    scenario = str(body.get("scenario", "")).strip()
+    _analytics.set_scenario(scenario)
+    log.info("Analytics: scenario set to %r", scenario)
+    return {"ok": True, "scenario": scenario}
+
+
+@app.delete("/analytics/clear")
+async def clear_analytics(method: Optional[str] = Query(None, description="Clear one method; omit to clear all")):
+    """
+    Discard accumulated error samples.
+
+    ?method=rssi  → clear only the 'rssi' buffer
+    (no query param) → clear all buffers
+    """
+    if method:
+        _analytics.clear_method(method)
+        return {"ok": True, "cleared": method}
+    _analytics.clear()
+    return {"ok": True, "cleared": "all"}
 
 
 # ── Devices ───────────────────────────────────────────────────────────────────
@@ -1532,4 +1740,4 @@ async def _run_survey(room_label: str, target_ssid: str, total_samples: int) -> 
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=False)
+    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
