@@ -264,6 +264,11 @@ AnchorPosEngine::get_all_positions() {
     std::lock_guard<std::mutex> lk(mu_);
     std::unordered_map<std::string, AnchorPosResult> out;
 
+    // Refresh per-anchor confidence weights from inter-anchor RSSI geometry
+    // before trilateration so every position estimate in this batch uses
+    // up-to-date weights without needing a separate rssi_variance_detection() call.
+    update_anchor_weights_locked();
+
     // Collect the set of all target IDs seen across all AP caches.
     std::unordered_map<std::string, bool> target_set;
     for (const auto& [ap_id, targets] : target_smoothed_) {
@@ -311,34 +316,78 @@ std::vector<std::string> AnchorPosEngine::get_known_targets() const {
 //  Variance detection  (STUB — implementation deferred)
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Private — caller MUST hold mu_.
+void AnchorPosEngine::update_anchor_weights_locked() {
+    // For each inter-anchor observation (observer A sees target B):
+    //
+    //   measured_dist = rssi_to_distance_m(ia_smoothed[A][B], P0_B, n_B)
+    //     → P0 and n come from B's AnchorDef (its tx characteristics), not A's.
+    //       This controls for B's hardware so residual error reflects A's read quality.
+    //
+    //   true_dist = ||A.pos - B.pos||₂  (from configured geometry)
+    //
+    //   error_m = |measured_dist - true_dist|
+    //
+    //   weight  = 1 / (1 + error_m²)
+    //     → Inverse-square decay: 0 m error → 1.0,  1 m error → 0.5,  3 m error → 0.1
+    //
+    //   anchor_weights_[A] = mean(weight) across all peers B that A has observed.
+    //
+    // Anchors with no inter-anchor data retain their existing weight (1.0 on init).
+
+    std::unordered_map<std::string, std::vector<double>> samples;
+    for (const auto& [id, _] : anchor_map_) {
+        samples[id] = {};
+    }
+
+    for (const auto& [observer_id, targets] : ia_smoothed_) {
+        auto obs_it = anchor_map_.find(observer_id);
+        if (obs_it == anchor_map_.end()) continue;
+        const AnchorDef& obs = obs_it->second;
+
+        for (const auto& [target_id, smoothed_rssi] : targets) {
+            auto tgt_it = anchor_map_.find(target_id);
+            if (tgt_it == anchor_map_.end()) continue;
+            const AnchorDef& tgt = tgt_it->second;
+
+            double dx        = obs.x - tgt.x;
+            double dy        = obs.y - tgt.y;
+            double true_dist = std::sqrt(dx * dx + dy * dy);
+            if (true_dist < 0.1) continue;   // co-located
+
+            // Use target's static rssi_at_1m to avoid circular dependency with
+            // get_rssi_at_1m() (which reads ia_smoothed_ itself).
+            double measured = rssi_to_distance_m(
+                smoothed_rssi, tgt.rssi_at_1m, tgt.path_loss_n);
+            if (measured <= 0.0) continue;
+
+            double error_m = std::abs(measured - true_dist);
+            double w       = 1.0 / (1.0 + error_m * error_m);
+            samples[observer_id].push_back(w);
+        }
+    }
+
+    for (const auto& [anchor_id, w_vec] : samples) {
+        if (w_vec.empty()) continue;
+        double sum  = std::accumulate(w_vec.begin(), w_vec.end(), 0.0);
+        anchor_weights_[anchor_id] = sum / static_cast<double>(w_vec.size());
+    }
+}
+
 std::unordered_map<std::string, double> AnchorPosEngine::rssi_variance_detection() {
     std::lock_guard<std::mutex> lk(mu_);
-
-    // ── STUB ──────────────────────────────────────────────────────────────────
-    //
-    // Implementation plan (deferred):
-    //
-    //   For each anchor pair (A, B) where ia_smoothed_[A][B] exists:
-    //     1. smoothed_rssi = ia_smoothed_[A][B]
-    //     2. measured_dist = rssi_to_distance_m(smoothed_rssi, P0_B, n_B)
-    //        where P0_B is the target anchor B's rssi_at_1m (its tx characteristic)
-    //     3. true_dist = sqrt((xA - xB)² + (yA - yB)²)
-    //     4. error_m   = |measured_dist - true_dist|
-    //     5. weight    = 1.0 / (1.0 + error_m * error_m)
-    //        (smooth decay: 0 m error → weight 1.0; 3 m error → weight ~0.1)
-    //
-    //   Each anchor's final weight = mean of weights across all its peer pairs.
-    //   anchor_weights_[anchor_id] is updated so trilateration_solver() picks
-    //   it up on the next get_position() call without any extra wiring.
-    //
-    // ─────────────────────────────────────────────────────────────────────────
-
-    return anchor_weights_;  // currently all 1.0
+    update_anchor_weights_locked();
+    return anchor_weights_;
 }
 
 std::unordered_map<std::string, double> AnchorPosEngine::get_anchor_weights() const {
     std::lock_guard<std::mutex> lk(mu_);
     return anchor_weights_;
+}
+
+RSSIFilter::RSSIMap AnchorPosEngine::get_target_rssi_cache() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return target_smoothed_;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

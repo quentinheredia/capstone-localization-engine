@@ -159,6 +159,7 @@ _state: Dict[str, Any] = {
     "ble_decisions":    [],    # BLE (stub — populated externally)
     "tof_decisions":    [],    # ToF trilateration verdicts
     "anchor_decisions": [],    # Anchor-pos C++ trilateration verdicts
+    "anchor_ranging":   {},    # {device_id: {anchor_id: {x,y,rssi_dbm,dist_m,weight}}}
     # Latest position per device per method
     "rssi_positions":    {},
     "raw_positions":     {},
@@ -694,6 +695,11 @@ async def _poll_loop() -> None:
                     _state["anchor_positions"][d.device_id] = {
                         "x": d.x, "y": d.y, "room_id": d.room_id, "timestamp": _ts,
                     }
+                # Update per-anchor ranging detail for the UI overlay
+                try:
+                    _state["anchor_ranging"] = anchor_wrapper.get_ranging_data()
+                except Exception:
+                    pass
 
             scan_buffer.append(rssi_map)
 
@@ -1295,6 +1301,7 @@ def get_map(method: str = Query("trilateration", description="trilateration | fi
         "fingerprinting": _state["fp_positions"],
         "gp":            _state["gp_positions"],
         "tof":           _state["tof_positions"],
+        "anchor":        _state["anchor_positions"],
         "ble":           {},
     }.get(method, _state["rssi_positions"])
 
@@ -1330,6 +1337,91 @@ def get_map(method: str = Query("trilateration", description="trilateration | fi
         "floor":   {"width_m": floor_w, "height_m": floor_h},
         "rooms":   rooms,
         "devices": devices,
+    }
+
+
+@app.get("/map/anchor-detail")
+def get_anchor_detail():
+    """Per-device, per-anchor RSSI and distance estimates from the anchor-pos engine.
+
+    Response shape::
+
+        {
+          "ranging": {
+            "<device_id>": {
+              "<anchor_id>": {
+                "x": float,        // anchor position in metres
+                "y": float,
+                "rssi_dbm": float, // latest smoothed RSSI reading
+                "dist_m": float,   // path-loss distance estimate
+                "weight": float    // variance-detection confidence [0,1]
+              }
+            }
+          },
+          "anchor_weights": { "<anchor_id>": float },
+          "p0_calibration": { "<anchor_id>": float }
+        }
+
+    Used by the Map View overlay to draw range circles and anchor→device lines.
+    """
+    return {
+        "ranging":         _state.get("anchor_ranging", {}),
+        "anchor_weights":  {},   # populated by engine; available via /diagnostics
+        "p0_calibration":  {},
+    }
+
+
+@app.get("/map/all")
+def get_map_all():
+    """All localization method positions in a single response.
+
+    Response shape::
+
+        {
+          "floor": { "width_m": float, "height_m": float },
+          "methods": {
+            "<method_key>": [
+              { "device_id": str, "x": float, "y": float,
+                "room_id": str, "confidence": float, "timestamp": str }
+            ]
+          }
+        }
+
+    Used by the Map View "All Methods" overlay to render ghost positions for
+    every active localization method simultaneously.
+    """
+    env: Optional[FloorEnvironment] = _state.get("env")
+    floor_w = env.width_m  if env else None
+    floor_h = env.height_m if env else None
+
+    all_pos = {
+        "trilateration": _state["rssi_positions"],
+        "raw":           _state["raw_positions"],
+        "kalman":        _state["kalman_positions"],
+        "fingerprinting": _state["fp_positions"],
+        "gp":            _state["gp_positions"],
+        "tof":           _state["tof_positions"],
+        "anchor":        _state["anchor_positions"],
+    }
+
+    methods: Dict[str, list] = {}
+    for method_key, pos_dict in all_pos.items():
+        entries = []
+        for dev_id, pos in pos_dict.items():
+            entries.append({
+                "device_id":  dev_id,
+                "x":          pos.get("x", 0),
+                "y":          pos.get("y", 0),
+                "room_id":    pos.get("room_id"),
+                "confidence": pos.get("confidence", 0),
+                "timestamp":  pos.get("timestamp"),
+            })
+        if entries:
+            methods[method_key] = entries
+
+    return {
+        "floor":   {"width_m": floor_w, "height_m": floor_h},
+        "methods": methods,
     }
 
 

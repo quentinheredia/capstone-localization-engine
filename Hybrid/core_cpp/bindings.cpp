@@ -392,5 +392,8 @@ Usage::
              "Return current {anchor_id: weight} snapshot (read-only).")
         // ── Diagnostics
         .def("create_anchor_map", &AnchorPosEngine::create_anchor_map,
-             "Return {anchor_id: (x, y)} for the currently loaded anchors.");
+             "Return {anchor_id: (x, y)} for the currently loaded anchors.")
+        .def("get_target_rssi_cache", &AnchorPosEngine::get_target_rssi_cache,
+             "Return {ap_id: {target_id: rssi_dbm}} — latest smoothed RSSI readings.\n"
+             "Use to compute per-anchor distance estimates in Python for UI overlays.");
 }

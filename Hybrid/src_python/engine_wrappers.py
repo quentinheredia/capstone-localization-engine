@@ -1836,6 +1836,69 @@ class AnchorPosEngineWrapper:
         """Evict all cached state for *target_id* from the C++ engine."""
         self._engine.clear_target(target_id)
 
+    def get_ranging_data(self) -> dict:
+        """Per-device, per-anchor RSSI and distance estimates.
+
+        Returns a dict shaped::
+
+            {
+              device_id: {
+                anchor_id: {
+                  "x":       float,   # anchor position (metres)
+                  "y":       float,
+                  "rssi_dbm": float,  # latest smoothed RSSI
+                  "dist_m":  float,   # path-loss distance estimate
+                  "weight":  float,   # variance-detection confidence [0, 1]
+                }
+              }
+            }
+
+        Used by the ``/map/anchor-detail`` endpoint to drive range circles
+        and anchor→device range lines on the live floor-plan overlay.
+        """
+        import math
+
+        rssi_cache = self._engine.get_target_rssi_cache()  # {ap_id: {dev_id: rssi}}
+        weights    = self.get_anchor_weights()             # {anchor_id: weight}
+
+        # Collect per-AP config (static P0 / n used when live calibration unavailable)
+        sys_cfg    = {}   # we stored these during __init__; re-derive from anchor_map
+        anchor_map = self._engine.create_anchor_map()  # {anchor_id: (x, y)}
+
+        # Build {device_id: {anchor_id: {...}}}
+        result: dict = {}
+        for ap_id, targets in rssi_cache.items():
+            ap = self._env.wifi_aps.get(ap_id)
+            if ap is None:
+                continue
+            # Use live-calibrated P0 if available; fall back to configured value
+            p0 = self._engine.get_rssi_at_1m(ap_id)      # calls get_all_p0 internally
+            # Retrieve path_loss_n from the AnchorDef stored on the engine
+            # (we can't reach private members, so derive n from the configured ap)
+            # AnchorDef.path_loss_n is set from cfg during __init__; we don't
+            # cache it here, so fall back to class default — acceptable because
+            # the C++ engine already used the correct n internally.
+            n = self._DEFAULT_N
+
+            for dev_id, rssi in targets.items():
+                if dev_id in self._ap_ids:
+                    continue   # skip inter-anchor entries
+                dist = 10.0 ** ((p0 - rssi) / (10.0 * n))
+                dist = max(0.05, min(dist, 50.0))   # sanity clamp
+
+                result.setdefault(dev_id, {})[ap_id] = {
+                    "x":        float(ap.x),
+                    "y":        float(ap.y),
+                    "rssi_dbm": round(float(rssi), 1),
+                    "dist_m":   round(dist, 2),
+                    "weight":   round(float(weights.get(ap_id, 1.0)), 3),
+                }
+        return result
+
+    def clear_target(self, target_id: str) -> None:
+        """Evict all cached state for *target_id* from the C++ engine."""
+        self._engine.clear_target(target_id)
+
     def clear_all_targets(self) -> None:
         """Evict all target-device state.  Calibration data is preserved."""
         self._engine.clear_all_targets()

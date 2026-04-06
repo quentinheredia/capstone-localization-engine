@@ -172,6 +172,13 @@ public:
      */
     std::unordered_map<std::string, double> rssi_variance_detection();
 
+    /**
+     * Returns the latest smoothed RSSI readings for all tracked targets.
+     * Shape: {ap_id → {target_id → rssi_dbm}}  (mirrors target_smoothed_).
+     * Used by Python to compute per-anchor distance estimates for the UI overlay.
+     */
+    RSSIFilter::RSSIMap get_target_rssi_cache() const;
+
     /// Return current per-anchor confidence weights (read-only snapshot).
     std::unordered_map<std::string, double> get_anchor_weights() const;
 
@@ -193,6 +200,9 @@ private:
 
     // Run the trilateration solve with current distances + anchor weights.
     AnchorPosResult trilateration_solver(const std::vector<AnchorDist>& candidates) const;
+
+    // Update anchor_weights_ from ia_smoothed_.  Caller MUST hold mu_.
+    void update_anchor_weights_locked();
 
     // ── Members ───────────────────────────────────────────────────────────────
     int    window_size_;
