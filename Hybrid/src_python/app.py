@@ -54,6 +54,7 @@ from engine_wrappers import (
 )
 from data_pipes import TelnetPipe, MQTTPipe
 import cloud_io
+from beanstalk_bridge import forward_decisions
 
 # ---------------------------------------------------------------------------
 # Logging — custom CONFIG level (15, between DEBUG=10 and INFO=20)
@@ -93,10 +94,6 @@ _poll_task: Optional[asyncio.Task] = None
 async def lifespan(app: FastAPI):
     global _poll_task
     # ── startup ──────────────────────────────────────────────────────────
-    # Load config (if present) so /config and /status work, but do NOT
-    # auto-start the poll loop.  The user starts localization explicitly
-    # via the platform's Start button (POST /engine/start) or the REST
-    # endpoint POST /poll/start.
     cfg = _load_cfg_from_disk()
     if cfg:
         _apply_cfg(cfg)
@@ -130,33 +127,31 @@ app.add_middleware(
 )
 
 # ---------------------------------------------------------------------------
-# In-memory state  (single-process; no locking needed in async context)
+# In-memory state
 # ---------------------------------------------------------------------------
 MAX_DECISIONS = 200
 MAX_LOGS      = 500
 
 _state: Dict[str, Any] = {
-    "cfg":           None,   # raw config dict
+    "cfg":           None,
     "cfg_error":     None,
-    "env":           None,   # FloorEnvironment
-    # Per-method decision rings
-    "rssi_decisions":   [],    # trilateration + SMA verdicts
-    "raw_decisions":    [],    # trilateration + NO filter verdicts
-    "kalman_decisions": [],    # trilateration + Kalman filter verdicts
-    "fp_decisions":     [],    # fingerprinting verdicts
-    "gp_decisions":     [],    # Sparse GP verdicts
-    "ble_decisions":    [],    # BLE (stub — populated externally)
-    "tof_decisions":    [],    # ToF trilateration verdicts
-    # Latest position per device per method
+    "env":           None,
+    "rssi_decisions":   [],
+    "raw_decisions":    [],
+    "kalman_decisions": [],
+    "fp_decisions":     [],
+    "gp_decisions":     [],
+    "ble_decisions":    [],
+    "tof_decisions":    [],
     "rssi_positions":    {},
     "raw_positions":     {},
     "kalman_positions":  {},
     "fp_positions":      {},
     "gp_positions":      {},
     "tof_positions":     {},
-    "device_status": {},     # {device_id: {reachable, last_scan}}
-    "raw":           None,   # last RawSnapshot dict
-    "logs":          [],     # List[{timestamp, severity, device_id, message}]
+    "device_status": {},
+    "raw":           None,
+    "logs":          [],
     "status": {
         "last_update":     None,
         "total_decisions": 0,
@@ -164,7 +159,6 @@ _state: Dict[str, Any] = {
     },
     "scan_counter":  0,
     "poll_running":  False,
-    # SSIDs seen in any AP apscan, keyed by SSID → {last_seen, signals{ap_id: rssi}}
     "seen_ssids":    {},
 }
 
@@ -211,13 +205,6 @@ def _apply_cfg(
     building_id: Optional[str] = None,
     floor_id:    Optional[str] = None,
 ) -> None:
-    """
-    Resolve the active location and rebuild FloorEnvironment.
-
-    campus_id / building_id / floor_id are hardcoded to None here so the
-    values come from config.yaml's edge_* keys.  Pass explicit values when
-    calling from a future location-selector endpoint or CLI flag.
-    """
     try:
         env = select_location(cfg, campus_id, building_id, floor_id)
         _state["env"] = env
@@ -257,11 +244,6 @@ def _severity(conf: Optional[float]) -> str:
 
 
 def _store_decision(d: LocalizationDecision, method_key: str) -> None:
-    """
-    Commit a verdict to the per-method ring, positions dict, and S3/CSV.
-
-    method_key: "rssi_decisions" | "fp_decisions" | "ble_decisions" | "tof_decisions"
-    """
     payload = {
         "_id":                  d.decision_id,
         "device_id":            d.device_id,
@@ -305,14 +287,12 @@ def _store_decision(d: LocalizationDecision, method_key: str) -> None:
         f"conf={d.confidence:.2f}  [{_vec_str}]"
     )
     _append_log(_severity(d.confidence), d.device_id, _log_msg)
-    # Always print decisions at INFO so they stand out in the console
     log.info("DECISION [%s]  %s → %s  conf=%.2f  vec=[%s]",
              _method, d.device_id, d.room_id, d.confidence, _vec_str)
 
     cfg = _state.get("cfg") or {}
     cloud_cfg   = cfg.get("cloud", {})
     s3_template = cloud_cfg.get("s3_key_template", "{campus}_{building}_{floor}_latest.json")
-    # Route to the per-method CSV (trilat_log / finger_log / ble_log / tof_log)
     cloud_io.log_to_csv_method(payload, method_key, cloud_cfg)
     cloud_io.push_to_s3(payload, key_template=s3_template)
 
@@ -322,11 +302,6 @@ def _store_decision(d: LocalizationDecision, method_key: str) -> None:
 # ---------------------------------------------------------------------------
 
 async def _poll_loop() -> None:
-    """
-    Core async loop.
-    Shared RSSI pipe feeds BOTH trilateration (every cycle, as preview) and
-    fingerprinting (verdict window only, when a radiomap exists).
-    """
     cfg = _state.get("cfg")
     env: Optional[FloorEnvironment] = _state.get("env")
     if cfg is None or env is None:
@@ -342,14 +317,12 @@ async def _poll_loop() -> None:
     target_ssids  = [t.ssid for t in env.targets]
 
     try:
-        # Build engine wrappers
         rssi_wrapper = RSSIEngineWrapper(env, cfg)
     except Exception as _e:
         _msg = f"[Poll startup] FAILED to build RSSIEngineWrapper: {type(_e).__name__}: {_e}"
         log.error(_msg); _append_log("ERROR", "", _msg)
         _state["poll_running"] = False; return
 
-    # Raw trilateration wrapper (no RSSI filter, pure baseline)
     try:
         raw_wrapper = RawRSSIEngineWrapper(env, cfg)
         _msg = "Raw trilateration enabled (no RSSI filtering — baseline)"
@@ -359,7 +332,6 @@ async def _poll_loop() -> None:
         _msg = f"[Poll startup] RawRSSIEngineWrapper failed (non-fatal): {_e}"
         log.warning(_msg); _append_log("WARN", "", _msg)
 
-    # Kalman-filtered trilateration wrapper
     try:
         kalman_wrapper = KalmanRSSIEngineWrapper(env, cfg)
         kf_cfg = cfg.get("system", {}).get("kalman_filter", {})
@@ -389,7 +361,6 @@ async def _poll_loop() -> None:
         _msg = f"[Poll startup] FAILED to load FingerprintWrapper: {type(_e).__name__}: {_e}"
         log.error(_msg); _append_log("ERROR", "", _msg)
 
-    # Sparse GP wrapper (uses same radiomap as fingerprinting)
     gp_wrapper: Optional[SGPWrapper] = None
     try:
         if radiomap_path and Path(radiomap_path).exists():
@@ -419,7 +390,6 @@ async def _poll_loop() -> None:
         _msg = f"[Poll startup] FAILED to load SGPWrapper: {type(_e).__name__}: {_e}"
         log.error(_msg); _append_log("ERROR", "", _msg)
 
-    # ToF wrapper — trilateration from ESP32 FTM ranges
     tof_wrapper: Optional[ToFWrapper] = None
     if env.tof_anchors:
         tof_wrapper = ToFWrapper(anchor_map=env.tof_anchors)
@@ -429,7 +399,6 @@ async def _poll_loop() -> None:
         _msg = "ToF disabled (no tof_anchors configured)"
         log.config(_msg); _append_log("CONFIG", "", _msg)
 
-    # Build pipes
     try:
         telnet_pipe = TelnetPipe(
             aps             = list(env.wifi_aps.values()),
@@ -479,15 +448,12 @@ async def _poll_loop() -> None:
     log.config(_start_msg)
     _append_log("CONFIG", "", _start_msg)
 
-    # ── Background task: drain MQTTPipe → ToFWrapper ─────────────────────────
     async def _mqtt_consumer():
-        """Ingest every incoming ToFMeasurement and update tof_positions."""
         async for meas in mqtt_pipe.stream():
             if tof_wrapper is None:
                 continue
             tof_wrapper.ingest(meas)
             _ts_tof = _now()
-            # Locate every tag that has measurements ready
             for _tag_id in tof_wrapper.tracked_tags():
                 _result = tof_wrapper.locate(_tag_id)
                 if _result is None:
@@ -514,7 +480,6 @@ async def _poll_loop() -> None:
             n = _state["scan_counter"]
             _ts = _now()
 
-            # ── Track every SSID visible in this scan (for tag poller) ────
             for _ap_id, _devs in rssi_map.items():
                 for _ssid, _rssi in _devs.items():
                     _entry = _state["seen_ssids"].setdefault(
@@ -523,14 +488,12 @@ async def _poll_loop() -> None:
                     _entry["last_seen"]          = _ts
                     _entry["signals"][_ap_id]    = _rssi
 
-            # ── Update reachability ───────────────────────────────────────
             for ap_id, dev_map in rssi_map.items():
                 for ssid in dev_map:
                     _state["device_status"][ssid] = {
                         "reachable": True, "last_scan": _ts
                     }
 
-            # ── CONFIG: scanning status ───────────────────────────────────
             _targets_seen = [s for s in target_ssids if any(s in d for d in rssi_map.values())]
             _targets_missing = [s for s in target_ssids if s not in _targets_seen]
             _scan_msg = (
@@ -541,7 +504,6 @@ async def _poll_loop() -> None:
             log.config(_scan_msg)
             _append_log("CONFIG", "", _scan_msg)
 
-            # ── CONFIG: per-target RSSI vector ────────────────────────────
             for _ssid in target_ssids:
                 _vec = {
                     _ap: _dat[_ssid]
@@ -556,7 +518,6 @@ async def _poll_loop() -> None:
                     log.config(_vec_msg)
                     _append_log("CONFIG", _ssid, _vec_msg)
 
-            # ── Raw snapshot for UI ───────────────────────────────────────
             present  = len(rssi_map)
             expected = len(env.wifi_aps)
             _state["raw"] = {
@@ -569,7 +530,6 @@ async def _poll_loop() -> None:
                 "results":      rssi_map,
             }
 
-            # ── SMA trilateration preview (every scan cycle) ─────────────
             for d in rssi_wrapper.process_cycle(rssi_map, scan_number=n):
                 _prev_msg = (
                     f"[Scan #{n}][SMA] {d.device_id} → {d.room_id}"
@@ -581,7 +541,6 @@ async def _poll_loop() -> None:
                     "x": d.x, "y": d.y, "room_id": d.room_id, "timestamp": _ts,
                 }
 
-            # ── Raw trilateration preview (no filter baseline) ────────────
             if raw_wrapper:
                 for d in raw_wrapper.process_cycle(rssi_map, scan_number=n):
                     _raw_msg = (
@@ -594,7 +553,6 @@ async def _poll_loop() -> None:
                         "x": d.x, "y": d.y, "room_id": d.room_id, "timestamp": _ts,
                     }
 
-            # ── Kalman trilateration preview ──────────────────────────────
             if kalman_wrapper:
                 for d in kalman_wrapper.process_cycle(rssi_map, scan_number=n):
                     _kal_msg = (
@@ -607,7 +565,6 @@ async def _poll_loop() -> None:
                         "x": d.x, "y": d.y, "room_id": d.room_id, "timestamp": _ts,
                     }
 
-            # ── Sparse GP preview (every scan cycle, if trained) ─────────
             if gp_wrapper and gp_wrapper.trained:
                 for _ssid in target_ssids:
                     _gp_vec = {
@@ -634,7 +591,6 @@ async def _poll_loop() -> None:
 
             scan_buffer.append(rssi_map)
 
-            # ── Verdict window ─────────────────────────────────────────────
             if asyncio.get_event_loop().time() - last_verdict >= update_int:
                 await _run_verdict(
                     scan_buffer, env,
@@ -673,16 +629,10 @@ async def _run_verdict(
     min_aps_for_valid: int,
     scan_counter:      int,
 ) -> None:
-    """
-    Aggregate the scan buffer and emit final localization decisions.
-    Runs SMA trilateration, Raw trilateration, Kalman trilateration,
-    fingerprinting, Sparse GP, and ToF (when available).
-    """
     timestamp = _now()
     log.config("=" * 55 + "  VERDICT")
 
     for ssid in target_ssids:
-        # Collect scans where enough APs saw this SSID
         complete_scans = [
             s for s in scan_buffer
             if sum(1 for ap, devs in s.items() if ssid in devs) >= min_aps_for_valid
@@ -705,7 +655,6 @@ async def _run_verdict(
             _append_log("WARN", ssid, _warn)
             continue
 
-        # Average the complete scans per AP
         averaged: Dict[str, Dict[str, float]] = defaultdict(dict)
         for ap_id in required_ap_ids:
             vals = [s[ap_id][ssid] for s in complete_scans if ssid in s.get(ap_id, {})]
@@ -723,7 +672,7 @@ async def _run_verdict(
         ):
             _store_decision(d, "rssi_decisions")
 
-        # ── Raw trilateration verdict (no filter baseline) ────────────────
+        # ── Raw trilateration verdict ─────────────────────────────────────
         if raw_wrapper:
             for d in raw_wrapper.process_cycle(
                 averaged,
@@ -749,7 +698,6 @@ async def _run_verdict(
             }
             room, conf = fp_wrapper.match(live_vec)
             if room not in ("Outside Defined Area", "Undetected"):
-                # Compute centroid of matched room polygon for live-map placement
                 fp_x, fp_y = 0.0, 0.0
                 matched_room = next(
                     (r for r in env.rooms if r.name == room), None
@@ -773,9 +721,9 @@ async def _run_verdict(
                     y           = fp_y,
                     scan_number = scan_counter,
                 )
-                _store_decision(d, "fp_decisions")   # logs at INFO internally
+                _store_decision(d, "fp_decisions")
 
-        # ── Sparse GP verdict ────────────────────────────────────────────
+        # ── Sparse GP verdict ─────────────────────────────────────────────
         if gp_wrapper and gp_wrapper.trained:
             live_vec = {
                 ap_id: averaged[ap_id][ssid]
@@ -799,9 +747,9 @@ async def _run_verdict(
                         y           = gp_y,
                         scan_number = scan_counter,
                     )
-                    _store_decision(d, "gp_decisions")   # logs at INFO internally
+                    _store_decision(d, "gp_decisions")
 
-    # ── ToF verdict (one per tracked tag, independent of SSID loop) ─────────
+    # ── ToF verdict ───────────────────────────────────────────────────────
     if tof_wrapper:
         for tag_id in tof_wrapper.tracked_tags():
             tof_result = tof_wrapper.locate(tag_id)
@@ -809,7 +757,6 @@ async def _run_verdict(
                 continue
             tof_x, tof_y, tof_conf = tof_result
 
-            # Room lookup via point-in-polygon (reuse engine helper if available)
             tof_room = "Undetected"
             for r in env.rooms:
                 poly = r.polygon
@@ -817,7 +764,6 @@ async def _run_verdict(
                     tof_room = r.name
                     break
             if tof_room == "Undetected" and env.rooms:
-                # Fallback: nearest room centroid
                 best = min(
                     env.rooms,
                     key=lambda r: (r.center_x - tof_x)**2 + (r.center_y - tof_y)**2,
@@ -840,9 +786,18 @@ async def _run_verdict(
             )
             _store_decision(d, "tof_decisions")
 
+    # ── Forward all new decisions to Beanstalk for the React frontend ─────
+    new_decisions = (
+        _state["rssi_decisions"][-1:]
+        + _state["raw_decisions"][-1:]
+        + _state["kalman_decisions"][-1:]
+        + _state["fp_decisions"][-1:]
+    )
+    if new_decisions:
+        forward_decisions(new_decisions)
+
 
 def _point_in_polygon(x: float, y: float, poly: list) -> bool:
-    """Ray-casting point-in-polygon test."""
     inside = False
     n = len(poly)
     j = n - 1
@@ -866,7 +821,6 @@ def get_health():
 
 @app.post("/poll/start")
 async def start_poll():
-    """Start the background poll loop (if not already running)."""
     global _poll_task
     if _state["poll_running"]:
         return {"ok": True, "message": "Already running"}
@@ -883,7 +837,6 @@ async def start_poll():
 
 @app.post("/poll/stop")
 async def stop_poll():
-    """Stop the background poll loop."""
     global _poll_task
     if _poll_task and not _poll_task.done():
         _poll_task.cancel()
@@ -952,14 +905,8 @@ async def upload_config(file: UploadFile = File(...)):
     return {"ok": True, "received_at": _now()}
 
 
-# ── Decisions — combined + per-method ────────────────────────────────────────
-
 @app.get("/decisions")
 def get_decisions(limit: int = 50):
-    """
-    Returns trilateration decisions by default (backward-compatible).
-    Falls back to CSV if the in-memory ring is empty.
-    """
     items = _state["rssi_decisions"][-limit:]
     if not items:
         cfg      = _state.get("cfg") or {}
@@ -976,14 +923,12 @@ def get_decisions_trilateration(limit: int = Query(50, ge=1, le=500)):
 
 @app.get("/decisions/raw")
 def get_decisions_raw(limit: int = Query(50, ge=1, le=500)):
-    """Raw RSSI trilateration decisions — no filtering applied (baseline)."""
     items = _state["raw_decisions"][-limit:]
     return {"method": "raw", "count": len(items), "items": items}
 
 
 @app.get("/decisions/kalman")
 def get_decisions_kalman(limit: int = Query(50, ge=1, le=500)):
-    """Kalman-filtered RSSI trilateration decisions."""
     items = _state["kalman_decisions"][-limit:]
     return {"method": "kalman", "count": len(items), "items": items}
 
@@ -996,14 +941,12 @@ def get_decisions_fingerprinting(limit: int = Query(50, ge=1, le=500)):
 
 @app.get("/decisions/gp")
 def get_decisions_gp(limit: int = Query(50, ge=1, le=500)):
-    """Sparse GP localization decisions."""
     items = _state["gp_decisions"][-limit:]
     return {"method": "gp", "count": len(items), "items": items}
 
 
 @app.get("/decisions/ble")
 def get_decisions_ble(limit: int = Query(50, ge=1, le=500)):
-    """BLE localization — stub. Populated by external BLE pipeline if available."""
     items = _state["ble_decisions"][-limit:]
     return {
         "method":  "ble",
@@ -1015,12 +958,9 @@ def get_decisions_ble(limit: int = Query(50, ge=1, le=500)):
 
 @app.get("/decisions/tof")
 def get_decisions_tof(limit: int = Query(50, ge=1, le=500)):
-    """ToF trilateration decisions from ESP32-S3 FTM ranging via MQTT."""
     items = _state["tof_decisions"][-limit:]
     return {"method": "tof", "count": len(items), "items": items}
 
-
-# ── Devices ───────────────────────────────────────────────────────────────────
 
 @app.get("/devices")
 def get_devices():
@@ -1037,16 +977,12 @@ def get_devices():
     return {"items": items}
 
 
-# ── Raw scan ──────────────────────────────────────────────────────────────────
-
 @app.get("/raw")
 def get_raw():
     if not _state["raw"]:
         raise HTTPException(404, "No raw scans yet")
     return _state["raw"]
 
-
-# ── Logs ──────────────────────────────────────────────────────────────────────
 
 @app.get("/logs")
 def get_logs(
@@ -1062,14 +998,8 @@ def get_logs(
     return {"count": len(items), "items": items[-limit:]}
 
 
-# ── Map — per-method ──────────────────────────────────────────────────────────
-
 @app.get("/map")
 def get_map(method: str = Query("trilateration", description="trilateration | fingerprinting | gp | ble | tof")):
-    """
-    Returns room polygons + latest device positions for the requested method.
-    Use ?method=trilateration (default) | fingerprinting | ble | tof.
-    """
     env: Optional[FloorEnvironment] = _state.get("env")
     rooms   = []
     floor_w = floor_h = None
@@ -1079,15 +1009,14 @@ def get_map(method: str = Query("trilateration", description="trilateration | fi
         floor_h = env.height_m
         rooms   = [{"name": r.name, "polygon": r.polygon} for r in env.rooms]
 
-    # Choose the right positions dict
     pos_map = {
-        "trilateration": _state["rssi_positions"],
-        "raw":           _state["raw_positions"],
-        "kalman":        _state["kalman_positions"],
+        "trilateration":  _state["rssi_positions"],
+        "raw":            _state["raw_positions"],
+        "kalman":         _state["kalman_positions"],
         "fingerprinting": _state["fp_positions"],
-        "gp":            _state["gp_positions"],
-        "tof":           _state["tof_positions"],
-        "ble":           {},
+        "gp":             _state["gp_positions"],
+        "tof":            _state["tof_positions"],
+        "ble":            {},
     }.get(method, _state["rssi_positions"])
 
     devices = [
@@ -1099,7 +1028,6 @@ def get_map(method: str = Query("trilateration", description="trilateration | fi
         for dev, pos in pos_map.items()
     ]
 
-    # Fallback to CSV if nothing in memory (trilateration only)
     if not devices and method == "trilateration":
         cfg      = _state.get("cfg") or {}
         csv_path = cfg.get("cloud", {}).get("csv_log_path", "telemetry_log.csv")
@@ -1125,16 +1053,15 @@ def get_map(method: str = Query("trilateration", description="trilateration | fi
     }
 
 
-# ── Survey / fingerprint calibration ──────────────────────────────────────────
+# ── Survey ────────────────────────────────────────────────────────────────────
 
-# Survey session state  (one survey at a time)
 _survey_state: Dict[str, Any] = {
     "running":           False,
     "room_label":        None,
     "target_ssid":       None,
     "total_samples":     0,
     "collected_samples": 0,
-    "status":            "idle",   # idle | running | done | cancelled | error
+    "status":            "idle",
     "error":             None,
 }
 _survey_task: Optional[asyncio.Task] = None
@@ -1146,20 +1073,9 @@ async def survey_start(
     target_ssid: Optional[str] = None,
     samples:     int = Query(10, ge=1, le=60),
 ):
-    """
-    Begin a background site survey — collects `samples` RSSI vectors
-    for `room_label` and saves each to the radiomap as it arrives.
-
-    Requires:
-      • Engine poll loop is NOT running (stop localization first).
-      • Config has been loaded (POST /config/reload) so APs are known.
-    """
     global _survey_task
     if _state["poll_running"]:
-        raise HTTPException(
-            409,
-            "Cannot survey while localization is running — POST /poll/stop first",
-        )
+        raise HTTPException(409, "Cannot survey while localization is running — POST /poll/stop first")
     if _survey_state["running"]:
         raise HTTPException(409, "A survey is already in progress")
 
@@ -1172,14 +1088,10 @@ async def survey_start(
     if cfg is None or env is None:
         raise HTTPException(503, "No config / location loaded — POST /config/reload first")
 
-    # Resolve target SSID (default to first configured target)
     if not target_ssid:
         targets = [t.ssid for t in env.targets]
         if not targets:
-            raise HTTPException(
-                400,
-                "No target SSIDs in config — specify target_ssid= query parameter",
-            )
+            raise HTTPException(400, "No target SSIDs in config — specify target_ssid= query parameter")
         target_ssid = targets[0]
 
     _survey_state.update({
@@ -1206,7 +1118,6 @@ async def survey_start(
 
 @app.get("/survey/status")
 def survey_status():
-    """Return the current survey progress."""
     total = _survey_state["total_samples"] or 1
     return {
         **_survey_state,
@@ -1216,7 +1127,6 @@ def survey_status():
 
 @app.post("/survey/cancel")
 async def survey_cancel():
-    """Cancel a running survey."""
     global _survey_task
     if _survey_task and not _survey_task.done():
         _survey_task.cancel()
@@ -1231,19 +1141,13 @@ async def survey_cancel():
 
 @app.get("/survey/radiomap")
 def get_survey_radiomap():
-    """
-    Return a per-room summary of the current radiomap file:
-      { rooms: { <room>: { sample_count, ap_count } }, ... }
-    """
     cfg = _state.get("cfg") or {}
     env: Optional[FloorEnvironment] = _state.get("env")
     if env is None:
         raise HTTPException(503, "No location selected — POST /config/reload first")
 
     rm_template   = cfg.get("cloud", {}).get("radiomap_path", "radiomap_{campus}_{building}_{floor}.json")
-    radiomap_path = cloud_io.resolve_radiomap_path(
-        rm_template, env.campus_id, env.building_id, env.floor_id
-    )
+    radiomap_path = cloud_io.resolve_radiomap_path(rm_template, env.campus_id, env.building_id, env.floor_id)
 
     if not radiomap_path or not Path(radiomap_path).exists():
         return {"rooms": {}, "path": radiomap_path, "exists": False, "total_rooms": 0}
@@ -1270,19 +1174,13 @@ def get_survey_radiomap():
 
 @app.get("/survey/radiomap/{room_label}")
 def get_survey_room_vectors(room_label: str):
-    """
-    Return the full RSSI vector list for one room in the radiomap.
-    Each entry is a dict of {ap_id: rssi_dbm} collected during the survey.
-    """
     cfg = _state.get("cfg") or {}
     env: Optional[FloorEnvironment] = _state.get("env")
     if env is None:
         raise HTTPException(503, "No location selected — POST /config/reload first")
 
     rm_template   = cfg.get("cloud", {}).get("radiomap_path", "radiomap_{campus}_{building}_{floor}.json")
-    radiomap_path = cloud_io.resolve_radiomap_path(
-        rm_template, env.campus_id, env.building_id, env.floor_id
-    )
+    radiomap_path = cloud_io.resolve_radiomap_path(rm_template, env.campus_id, env.building_id, env.floor_id)
 
     if not radiomap_path or not Path(radiomap_path).exists():
         raise HTTPException(404, "Radiomap file not found")
@@ -1292,18 +1190,12 @@ def get_survey_room_vectors(room_label: str):
         if room_label not in data:
             raise HTTPException(404, f"Room '{room_label}' not found in radiomap")
         vectors = data[room_label]
-        # Compute per-AP averages for a quick summary row
         ap_keys = {k for v in vectors for k in v}
         averages = {
             ap: round(sum(v[ap] for v in vectors if ap in v) / sum(1 for v in vectors if ap in v), 1)
             for ap in ap_keys
         }
-        return {
-            "room":     room_label,
-            "count":    len(vectors),
-            "vectors":  vectors,
-            "averages": averages,
-        }
+        return {"room": room_label, "count": len(vectors), "vectors": vectors, "averages": averages}
     except HTTPException:
         raise
     except Exception as exc:
@@ -1312,11 +1204,6 @@ def get_survey_room_vectors(room_label: str):
 
 @app.get("/seen_ssids")
 def get_seen_ssids(max_age_s: int = 120):
-    """
-    Return all SSIDs observed in recent apscan cycles.
-    Filters to entries seen within the last `max_age_s` seconds (default 120).
-    Response: { ssids: { <ssid>: { last_seen, signals: {ap_id: rssi} } } }
-    """
     from datetime import timezone as _tz
     cutoff_ts = datetime.now(_tz.utc).timestamp() - max_age_s
     fresh = {}
@@ -1332,16 +1219,13 @@ def get_seen_ssids(max_age_s: int = 120):
 
 @app.delete("/survey/radiomap/{room_label}")
 def delete_survey_room(room_label: str):
-    """Remove one room's calibration vectors from the radiomap file."""
     cfg = _state.get("cfg") or {}
     env: Optional[FloorEnvironment] = _state.get("env")
     if env is None:
         raise HTTPException(503, "No location selected — POST /config/reload first")
 
     rm_template   = cfg.get("cloud", {}).get("radiomap_path", "radiomap_{campus}_{building}_{floor}.json")
-    radiomap_path = cloud_io.resolve_radiomap_path(
-        rm_template, env.campus_id, env.building_id, env.floor_id
-    )
+    radiomap_path = cloud_io.resolve_radiomap_path(rm_template, env.campus_id, env.building_id, env.floor_id)
 
     if not radiomap_path or not Path(radiomap_path).exists():
         raise HTTPException(404, "Radiomap file not found")
@@ -1361,7 +1245,6 @@ def delete_survey_room(room_label: str):
 
 @app.get("/survey/targets")
 def survey_targets():
-    """Return the list of configured target SSIDs from the active config."""
     env: Optional[FloorEnvironment] = _state.get("env")
     if env is None:
         return {"targets": []}
@@ -1370,17 +1253,6 @@ def survey_targets():
 
 @app.post("/survey/{room_label}")
 def post_survey(room_label: str, payload: Dict[str, Any]):
-    """
-    Receive one pre-computed RSSI fingerprint vector for a named room.
-    Body: {"AP1": -45.0, "AP2": -55.0, ...}
-
-    This endpoint accepts a single externally computed vector.
-    To run a full automated survey, use POST /survey/start instead.
-
-    The radiomap file is resolved to the active location so calibration
-    data is always physically anchored:
-        radiomap_Carleton_University_Mackenzie_Building_Floor_3.json
-    """
     cfg  = _state.get("cfg") or {}
     env: Optional[FloorEnvironment] = _state.get("env")
     if env is None:
@@ -1392,22 +1264,9 @@ def post_survey(room_label: str, payload: Dict[str, Any]):
     return {"ok": True, "room": room_label, "file": radiomap_path, "samples_added": 1}
 
 
-# ── Survey background loop ─────────────────────────────────────────────────────
-
 async def _run_survey(room_label: str, target_ssid: str, total_samples: int) -> None:
-    """
-    Background task: open a fresh TelnetPipe, collect `total_samples`
-    RSSI vectors for `target_ssid`, and write each one to the radiomap
-    as it arrives (so partial data is never lost on cancellation).
-
-    IMPORTANT: _survey_state["running"] is set True by the caller (survey_start).
-    This function is responsible for always resetting it to False on exit —
-    even if setup code raises before the TelnetPipe is created.
-    The outer try/finally guarantees this regardless of where an exception occurs.
-    """
     pipe: Optional[TelnetPipe] = None
     try:
-        # ── setup (any exception here is also caught) ───────────────────────
         cfg  = _state.get("cfg") or {}
         env: Optional[FloorEnvironment] = _state.get("env")
 
@@ -1424,22 +1283,13 @@ async def _run_survey(room_label: str, target_ssid: str, total_samples: int) -> 
 
         wifi_aps = list(env.wifi_aps.values())
         log.info(
-            "[Survey] ════ Starting survey ════  room=%r  ssid=%r  samples=%d  radiomap=%s",
+            "[Survey] Starting — room=%r  ssid=%r  samples=%d  radiomap=%s",
             room_label, target_ssid, total_samples, radiomap_path,
         )
-        log.info("[Survey] APs in scope (%d): %s",
-                 len(wifi_aps), [(ap.id, ap.host) for ap in wifi_aps])
-        log.debug("[Survey] Prompts: main=%r  sub=%r", prompts.get("main"), prompts.get("sub"))
 
         if not wifi_aps:
-            raise RuntimeError(
-                "No WiFi APs in the loaded environment — "
-                "check that anchors with type 'engenius_ap' are assigned to "
-                f"floor '{env.floor_id}' and enabled. "
-                "Push config via Load Config on the Survey page before starting."
-            )
+            raise RuntimeError("No WiFi APs in the loaded environment")
 
-        # A slightly slower interval gives APs time to refresh their apscan table
         pipe = TelnetPipe(
             aps             = wifi_aps,
             target_ssids    = [target_ssid],
@@ -1447,21 +1297,11 @@ async def _run_survey(room_label: str, target_ssid: str, total_samples: int) -> 
             poll_interval_s = 2.0,
         )
 
-        # ── collection loop ─────────────────────────────────────────────────
-        log.info("[Survey] Connecting TelnetPipe to all APs …")
         await pipe.connect()
-        log.info(
-            "[Survey] TelnetPipe ready — beginning collection of %d samples",
-            total_samples,
-        )
+        log.info("[Survey] TelnetPipe ready — collecting %d samples", total_samples)
 
         async for rssi_map in pipe.stream():
             sample_n = _survey_state["collected_samples"] + 1
-            log.debug(
-                "[Survey] Raw cycle map (before vector build): %s", rssi_map
-            )
-
-            # Build the per-AP vector for this target SSID
             vector = {
                 ap_id: ap_data[target_ssid]
                 for ap_id, ap_data in rssi_map.items()
@@ -1469,62 +1309,38 @@ async def _run_survey(room_label: str, target_ssid: str, total_samples: int) -> 
             }
 
             if not vector:
-                log.debug(
-                    "[Survey] Cycle yielded no data for target SSID %r — skipping", target_ssid
-                )
+                log.debug("[Survey] No data for %r this cycle — skipping", target_ssid)
             else:
-                log.info(
-                    "[Survey #%d/%d] room=%r  vector=%s",
-                    sample_n, total_samples, room_label, vector,
-                )
-                log.debug(
-                    "[Survey #%d/%d] Writing vector to radiomap file: %s",
-                    sample_n, total_samples, radiomap_path,
-                )
-                # Run file I/O in a thread so it doesn't block the event loop
+                log.info("[Survey #%d/%d] room=%r  vector=%s", sample_n, total_samples, room_label, vector)
                 loop = asyncio.get_running_loop()
                 await loop.run_in_executor(
                     None, cloud_io.save_radiomap, room_label, vector, radiomap_path,
                 )
                 _survey_state["collected_samples"] += 1
-                log.debug(
-                    "[Survey #%d/%d] ✓ Vector saved — progress %d/%d (%.0f%%)",
-                    _survey_state["collected_samples"], total_samples,
-                    _survey_state["collected_samples"], total_samples,
-                    100 * _survey_state["collected_samples"] / total_samples,
-                )
 
             if _survey_state["collected_samples"] >= total_samples:
-                log.info("[Survey] Target sample count reached — stopping stream")
                 break
 
         _survey_state["status"] = "done"
-        log.info(
-            "[Survey] ════ Complete ════  %d/%d vectors saved for room %r  file=%s",
-            _survey_state["collected_samples"], total_samples, room_label, radiomap_path,
-        )
+        log.info("[Survey] Complete — %d/%d vectors saved for room %r",
+                 _survey_state["collected_samples"], total_samples, room_label)
 
     except asyncio.CancelledError:
         _survey_state["status"] = "cancelled"
-        log.info(
-            "[Survey] ════ Cancelled ════  saved %d/%d samples for %r",
-            _survey_state["collected_samples"], total_samples, room_label,
-        )
+        log.info("[Survey] Cancelled — saved %d/%d samples",
+                 _survey_state["collected_samples"], total_samples)
         raise
     except Exception as exc:
         _survey_state["status"] = "error"
         _survey_state["error"]  = str(exc)
-        log.error("[Survey] ════ Error ════  %s: %s", type(exc).__name__, exc, exc_info=True)
+        log.error("[Survey] Error — %s: %s", type(exc).__name__, exc, exc_info=True)
     finally:
-        # Always reset running — even if setup code raised before pipe was created
         if pipe is not None:
-            log.debug("[Survey] Closing TelnetPipe …")
             try:
                 await pipe.close()
-            except Exception as close_exc:
-                log.debug("[Survey] pipe.close() raised (ignored): %s", close_exc)
+            except Exception:
+                pass
         _survey_state["running"] = False
-        log.debug("[Survey] Survey task exit — running=False")
 
 
 # ---------------------------------------------------------------------------
