@@ -56,423 +56,423 @@ locations:
               WAP6:
                 host: 192.168.1.54
                 x: 16.92
-                y: 9.42
+                y: 39.629
                 username: admin
                 password: admin
               WAP4:
                 host: 192.168.1.22
                 x: 29.55
-                y: 19.14
+                y: 29.909
                 username: admin
                 password: admin
               WAP1:
                 host: 192.168.1.75
                 x: 9.88
-                y: 16.82
+                y: 32.229
                 username: admin
                 password: admin
               WAP10:
                 host: 192.168.1.19
                 x: 16.1
-                y: 43.41
+                y: 5.639
                 username: admin
                 password: admin
             tof_anchors: {}
             rooms:
               Lobby:
                 center_x: 11.484
-                center_y: 39.211
+                center_y: 9.838
                 polygon:
                 - - 9.61
-                  - 24.25
+                  - 24.799
                 - - 18.21
-                  - 24.25
+                  - 24.799
                 - - 18.09
-                  - 37.08
+                  - 11.969
                 - - 19.17
-                  - 37.14
+                  - 11.909
                 - - 19.19
-                  - 43.49
+                  - 5.559
                 - - 11.92
-                  - 43.47
+                  - 5.579
                 - - 11.95
-                  - 47.75
+                  - 1.299
                 - - 9.58
-                  - 47.77
+                  - 1.279
                 - - 9.62
-                  - 44.64
+                  - 4.409
                 - - 8.78
-                  - 44.66
+                  - 4.389
                 - - 8.76
-                  - 40.8
+                  - 8.249
                 - - 3.13
-                  - 40.81
+                  - 8.239
                 - - 3.17
-                  - 36.42
+                  - 12.629
                 - - 9.6
-                  - 36.42
+                  - 12.629
                 priority_label: Standard
                 localization_type: rssi_section
                 alert_on_exit: false
               Hall 1:
                 center_x: 11.924
-                center_y: 17.352
+                center_y: 31.697
                 polygon:
                 - - 9.62
-                  - 11.11
+                  - 37.939
                 - - 12.01
-                  - 11.14
+                  - 37.909
                 - - 11.99
-                  - 15.71
+                  - 33.339
                 - - 14.05
-                  - 15.75
+                  - 33.299
                 - - 14.05
-                  - 18.29
+                  - 30.759
                 - - 12.03
-                  - 18.29
+                  - 30.759
                 - - 12.03
-                  - 24.28
+                  - 24.769
                 - - 9.61
-                  - 24.25
+                  - 24.799
                 priority_label: Standard
                 localization_type: rssi_section
                 alert_on_exit: false
               Hall 2:
                 center_x: 19.517
-                center_y: 10.707
+                center_y: 38.342
                 polygon:
                 - - 9.01
-                  - 9.34
+                  - 39.709
                 - - 9.01
-                  - 11.11
+                  - 37.939
                 - - 9.62
-                  - 11.11
+                  - 37.939
                 - - 12.01
-                  - 11.14
+                  - 37.909
                 - - 20.72
-                  - 11.12
+                  - 37.929
                 - - 26.97
-                  - 13.63
+                  - 35.419
                 - - 27.63
-                  - 15.71
+                  - 33.339
                 - - 27.63
-                  - 9.31
+                  - 39.739
                 - - 26.8
-                  - 9.31
+                  - 39.739
                 - - 26.8
-                  - 8.68
+                  - 40.369
                 - - 19
-                  - 8.68
+                  - 40.369
                 - - 19
-                  - 9.34
+                  - 39.709
                 priority_label: Standard
                 localization_type: rssi_section
                 alert_on_exit: false
               Hall 4:
                 center_x: 28.135
-                center_y: 15.369
+                center_y: 33.68
                 polygon:
                 - - 27.62
-                  - 5.97
+                  - 43.079
                 - - 29.67
-                  - 5.94
+                  - 43.109
                 - - 29.69
-                  - 23.81
+                  - 25.239
                 - - 27.07
-                  - 23.87
+                  - 25.179
                 - - 27.86
-                  - 21.61
+                  - 27.439
                 - - 27.91
-                  - 16.73
+                  - 32.319
                 - - 27.63
-                  - 15.71
+                  - 33.339
                 - - 27.63
-                  - 9.31
+                  - 39.739
                 priority_label: Standard
                 localization_type: rssi_section
                 alert_on_exit: false
               Hall 3:
                 center_x: 24.413
-                center_y: 24.621
+                center_y: 24.428
                 polygon:
                 - - 18.21
-                  - 24.25
+                  - 24.799
                 - - 18.12
-                  - 26.56
+                  - 22.489
                 - - 30.24
-                  - 26.56
+                  - 22.489
                 - - 30.43
-                  - 23.8
+                  - 25.249
                 - - 29.69
-                  - 23.81
+                  - 25.239
                 - - 27.07
-                  - 23.87
+                  - 25.179
                 - - 20.78
-                  - 23.84
+                  - 25.209
                 - - 20.76
-                  - 24.28
+                  - 24.769
                 priority_label: Standard
                 localization_type: rssi_section
                 alert_on_exit: false
               Exit 1:
                 center_x: 20.796
-                center_y: 41.129
+                center_y: 7.92
                 polygon:
                 - - 19.19
-                  - 36.33
+                  - 12.719
                 - - 23.18
-                  - 36.32
+                  - 12.729
                 - - 23.18
-                  - 44.16
+                  - 4.889
                 - - 21.53
-                  - 44.15
+                  - 4.899
                 - - 21.4
-                  - 43.74
+                  - 5.309
                 - - 19.53
-                  - 43.7
+                  - 5.349
                 - - 19.19
-                  - 43.49
+                  - 5.559
                 - - 19.17
-                  - 37.14
+                  - 11.909
                 priority_label: Standard
                 localization_type: rssi_section
                 alert_on_exit: false
               Exit 2:
                 center_x: 1.583
-                center_y: 39.182
+                center_y: 9.867
                 polygon:
                 - - 0.04
-                  - 37.55
+                  - 11.499
                 - - 3.14
-                  - 37.58
+                  - 11.469
                 - - 3.13
-                  - 40.81
+                  - 8.239
                 - - 0.02
-                  - 40.79
+                  - 8.259
                 priority_label: Standard
                 localization_type: rssi_section
                 alert_on_exit: false
               Cha Time:
                 center_x: 4.144
-                center_y: 42.33
+                center_y: 6.719
                 polygon:
                 - - 0.02
-                  - 40.79
+                  - 8.259
                 - - 3.13
-                  - 40.81
+                  - 8.239
                 - - 8.76
-                  - 40.8
+                  - 8.249
                 - - 8.78
-                  - 44.66
+                  - 4.389
                 - - 0.03
-                  - 44.59
+                  - 4.459
                 priority_label: Standard
                 localization_type: rssi_section
                 alert_on_exit: false
               Stair 2A:
                 center_x: 14.538
-                center_y: 47.362
+                center_y: 1.687
                 polygon:
                 - - 11.97
-                  - 45.5
+                  - 3.549
                 - - 18.39
-                  - 45.52
+                  - 3.529
                 - - 18.4
-                  - 49.01
+                  - 0.039
                 - - 11.98
-                  - 49.03
+                  - 0.019
                 - - 11.95
-                  - 47.75
+                  - 1.299
                 priority_label: Standard
                 localization_type: rssi_section
                 alert_on_exit: false
               Aerospace Lab:
                 center_x: 6.957
-                center_y: 33.958
+                center_y: 15.091
                 polygon:
                 - - 4.33
-                  - 31.5
+                  - 17.549
                 - - 9.59
-                  - 31.52
+                  - 17.529
                 - - 9.6
-                  - 36.42
+                  - 12.629
                 - - 4.31
-                  - 36.39
+                  - 12.659
                 priority_label: Standard
                 localization_type: rssi_section
                 alert_on_exit: false
               Breakout Room:
                 center_x: 7.478
-                center_y: 29.672
+                center_y: 19.377
                 polygon:
                 - - 5.37
-                  - 27.83
+                  - 21.219
                 - - 9.63
-                  - 27.83
+                  - 21.219
                 - - 9.59
-                  - 31.52
+                  - 17.529
                 - - 5.32
-                  - 31.51
+                  - 17.539
                 priority_label: Standard
                 localization_type: rssi_section
                 alert_on_exit: false
               Lecture Room:
                 center_x: 7.065
-                center_y: 14.062
+                center_y: 34.987
                 polygon:
                 - - 9.01
-                  - 9.34
+                  - 39.709
                 - - 2.58
-                  - 9.3
+                  - 39.749
                 - - 2.58
-                  - 21.74
+                  - 27.309
                 - - 9.59
-                  - 21.77
+                  - 27.279
                 - - 9.62
-                  - 11.11
+                  - 37.939
                 - - 9.01
-                  - 11.11
+                  - 37.939
                 priority_label: Standard
                 localization_type: rssi_section
                 alert_on_exit: false
               Lecture Room 3:
                 center_x: 23.085
-                center_y: 18.963
+                center_y: 30.086
                 polygon:
                 - - 18.33
-                  - 11.1
+                  - 37.949
                 - - 20.72
-                  - 11.12
+                  - 37.929
                 - - 26.97
-                  - 13.63
+                  - 35.419
                 - - 27.63
-                  - 15.71
+                  - 33.339
                 - - 27.91
-                  - 16.73
+                  - 32.319
                 - - 27.86
-                  - 21.61
+                  - 27.439
                 - - 27.07
-                  - 23.87
+                  - 25.179
                 - - 20.78
-                  - 23.84
+                  - 25.209
                 - - 19.16
-                  - 23.86
+                  - 25.189
                 - - 19.16
-                  - 23.56
+                  - 25.489
                 - - 18.35
-                  - 23.56
+                  - 25.489
                 priority_label: Standard
                 localization_type: rssi_section
                 alert_on_exit: false
               Breakout Room 2302:
                 center_x: 33.502
-                center_y: 25.582
+                center_y: 23.467
                 polygon:
                 - - 30.43
-                  - 23.8
+                  - 25.249
                 - - 36.57
-                  - 23.86
+                  - 25.189
                 - - 36.58
-                  - 27.33
+                  - 21.719
                 - - 30.43
-                  - 27.34
+                  - 21.709
                 priority_label: Standard
                 localization_type: rssi_section
                 alert_on_exit: false
               Lab:
                 center_x: 33.682
-                center_y: 16.43
+                center_y: 32.619
                 polygon:
                 - - 29.72
-                  - 9
+                  - 40.049
                 - - 37.62
-                  - 9.05
+                  - 39.999
                 - - 37.699
-                  - 23.86
+                  - 25.189
                 - - 29.69
-                  - 23.81
+                  - 25.239
                 priority_label: Standard
                 localization_type: rssi_section
                 alert_on_exit: false
               Stair 2B:
                 center_x: 32.877
-                center_y: 7.475
+                center_y: 41.574
                 polygon:
                 - - 29.67
-                  - 5.94
+                  - 43.109
                 - - 36.05
-                  - 5.95
+                  - 43.099
                 - - 36.07
-                  - 9.01
+                  - 40.039
                 - - 29.72
-                  - 9
+                  - 40.049
                 priority_label: Standard
                 localization_type: rssi_section
                 alert_on_exit: false
               Storage:
                 center_x: 29.635
-                center_y: 4.43
+                center_y: 44.619
                 polygon:
                 - - 27.63
-                  - 2.9
+                  - 46.149
                 - - 31.62
-                  - 2.9
+                  - 46.149
                 - - 31.67
-                  - 5.95
+                  - 43.099
                 - - 27.62
-                  - 5.97
+                  - 43.079
                 priority_label: Standard
                 localization_type: rssi_section
                 alert_on_exit: false
               Lecture Room 2:
                 center_x: 23.268
-                center_y: 6.35
+                center_y: 42.699
                 polygon:
                 - - 15.33
-                  - 0.01
+                  - 49.039
                 - - 27.57
-                  - 0.01
+                  - 49.039
                 - - 27.63
-                  - 2.9
+                  - 46.149
                 - - 27.62
-                  - 5.97
+                  - 43.079
                 - - 27.63
-                  - 9.31
+                  - 39.739
                 - - 26.8
-                  - 9.31
+                  - 39.739
                 - - 26.8
-                  - 8.68
+                  - 40.369
                 - - 19
-                  - 8.68
+                  - 40.369
                 - - 19
-                  - 9.34
+                  - 39.709
                 - - 15.3
-                  - 9.29
+                  - 39.759
                 priority_label: Standard
                 localization_type: rssi_section
                 alert_on_exit: false
               Privacy Zone:
                 center_x: 14.561
-                center_y: 18.041
+                center_y: 31.008
                 polygon:
                 - - 12.01
-                  - 11.14
+                  - 37.909
                 - - 18.33
-                  - 11.1
+                  - 37.949
                 - - 18.35
-                  - 23.56
+                  - 25.489
                 - - 18.21
-                  - 24.25
+                  - 24.799
                 - - 12.03
-                  - 24.28
+                  - 24.769
                 - - 12.03
-                  - 18.29
+                  - 30.759
                 - - 14.05
-                  - 18.29
+                  - 30.759
                 - - 14.05
-                  - 15.75
+                  - 33.299
                 - - 11.99
-                  - 15.71
+                  - 33.339
                 priority_label: Standard
                 localization_type: rssi_section
                 alert_on_exit: false
