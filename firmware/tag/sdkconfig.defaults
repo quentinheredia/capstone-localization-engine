@@ -1,0 +1,25 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# sdkconfig.defaults  —  ToF Tag  (FTM Initiator)
+# ─────────────────────────────────────────────────────────────────────────────
+
+CONFIG_IDF_TARGET="esp32s3"
+
+# Wi-Fi  — enable BOTH initiator and scan support
+CONFIG_ESP_WIFI_ENABLED=y
+CONFIG_ESP_WIFI_FTM_ENABLE=y
+CONFIG_ESP_WIFI_FTM_INITIATOR_SUPPORT=y
+CONFIG_ESP_WIFI_FTM_RESPONDER_SUPPORT=n
+
+# MQTT
+CONFIG_MQTT_PROTOCOL_311=y
+CONFIG_MQTT_TRANSPORT_TCP=y
+CONFIG_MQTT_BUFFER_SIZE=2048
+
+# JSON
+CONFIG_CJSON_ENABLE=y
+
+# Logging
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# Flash
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
