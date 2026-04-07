@@ -110,8 +110,10 @@ def _wait_for_server(port: int, proc: subprocess.Popen = None, timeout: int = 30
 def _map_window_html(method: str, engine_port: int) -> str:
     """
     Self-contained HTML page for a pop-out map window.
-    Polls the engine /map?method=... endpoint and renders rooms + devices
-    on a full-window canvas.  No external dependencies.
+    - Loads floor/room hierarchy from the Platform API (localhost:8080)
+    - Polls the engine /map?method=... endpoint for live device positions
+    - Floor + room focus dropdowns in the header
+    - Zoom (wheel) + pan (drag) on the canvas
     """
     labels = {
         "trilateration": "Trilateration",
@@ -121,128 +123,243 @@ def _map_window_html(method: str, engine_port: int) -> str:
     }
     label = labels.get(method, method)
     return f"""<!DOCTYPE html>
-<html><head>
+<html lang="en"><head>
 <meta charset="utf-8">
 <title>{label} — IPS Map</title>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
-body{{background:#111;color:#e4e4e7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;overflow:hidden}}
-#header{{display:flex;align-items:center;justify-content:space-between;padding:8px 16px;background:#1a1a2e;border-bottom:1px solid #333}}
-#header h2{{font-size:14px;font-weight:600}}
-#header .info{{font-size:11px;color:#a1a1aa}}
-canvas{{display:block}}
-#footer{{position:fixed;bottom:0;left:0;right:0;padding:6px 16px;background:#1a1a2e;border-top:1px solid #333;font:11px monospace;color:#a1a1aa;white-space:nowrap;overflow-x:auto}}
+body{{background:#111;color:#e4e4e7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;overflow:hidden;display:flex;flex-direction:column;height:100vh}}
+#header{{display:flex;align-items:center;gap:8px;padding:6px 14px;background:#1a1a2e;border-bottom:1px solid #333;flex-shrink:0;flex-wrap:wrap}}
+#header h2{{font-size:13px;font-weight:600;margin-right:4px;white-space:nowrap}}
+#header label{{font-size:11px;color:#71717a;white-space:nowrap}}
+#header select{{background:#0f0f1e;color:#e4e4e7;border:1px solid #3f3f5a;border-radius:4px;padding:2px 6px;font-size:11px;cursor:pointer;max-width:160px}}
+#status{{font-size:11px;color:#71717a;margin-left:auto;white-space:nowrap}}
+#canvas-wrap{{flex:1;position:relative;overflow:hidden}}
+canvas{{display:block;cursor:grab}}
+canvas.dragging{{cursor:grabbing}}
+#footer{{padding:4px 14px;background:#1a1a2e;border-top:1px solid #333;font:10px monospace;color:#71717a;flex-shrink:0;white-space:nowrap;overflow-x:auto}}
 </style>
 </head><body>
 <div id="header">
   <h2>{label} Map</h2>
-  <span class="info" id="status">Connecting…</span>
+  <label>Floor:</label>
+  <select id="sel-floor" onchange="onFloorChange(+this.value)">
+    <option value="">Loading…</option>
+  </select>
+  <label>Focus room:</label>
+  <select id="sel-room" onchange="onRoomChange(this.value)">
+    <option value="">— All rooms —</option>
+  </select>
+  <span id="status">Connecting…</span>
 </div>
-<canvas id="c"></canvas>
-<div id="footer" id="devlist"></div>
+<div id="canvas-wrap"><canvas id="c"></canvas></div>
+<div id="footer"></div>
 <script>
-const ENGINE = "http://localhost:{engine_port}";
-const METHOD = "{method}";
-const canvas = document.getElementById("c");
-const ctx    = canvas.getContext("2d");
-const status = document.getElementById("status");
-const footer = document.getElementById("footer");
-let rooms = [], devices = [], fw = 20, fh = 20;
+const PLATFORM = "http://localhost:8080/api/v1";
+const ENGINE   = "http://localhost:{engine_port}";
+const METHOD   = "{method}";
 
+const canvas   = document.getElementById("c");
+const ctx      = canvas.getContext("2d");
+const statusEl = document.getElementById("status");
+const footer   = document.getElementById("footer");
+const selFloor = document.getElementById("sel-floor");
+const selRoom  = document.getElementById("sel-room");
+
+let rooms = [], devices = [], fw = 20, fh = 20;
+let zoom = 1, panX = 0, panY = 0;
+let isDragging = false, dragSX = 0, dragSY = 0, pStartX = 0, pStartY = 0;
+let focusRoomName = "";
+
+// ── coordinate helpers ─────────────────────────────────────────────────
+const toCx = m => m * zoom + panX;
+const toCy = m => m * zoom + panY;
+
+// ── canvas sizing ──────────────────────────────────────────────────────
 function resize() {{
-  canvas.width  = window.innerWidth;
-  canvas.height = window.innerHeight - 60;  // header + footer
-  canvas.style.marginTop = "0";
+  const wrap = document.getElementById("canvas-wrap");
+  canvas.width  = wrap.clientWidth;
+  canvas.height = wrap.clientHeight;
+  if (!focusRoomName) fitAll();
   render();
 }}
 window.addEventListener("resize", resize);
 
+function fitAll() {{
+  const W = canvas.width, H = canvas.height;
+  const s = Math.min(W / fw, H / fh) * 0.88;
+  zoom = s;
+  panX = (W - fw * s) / 2;
+  panY = (H - fh * s) / 2;
+}}
+
+// ── room focus ─────────────────────────────────────────────────────────
+function applyFocus(name) {{
+  if (!name) {{ fitAll(); render(); return; }}
+  const r = rooms.find(r => r.name === name);
+  if (!r?.polygon?.length) return;
+  const xs = r.polygon.map(([x]) => x), ys = r.polygon.map(([,y]) => y);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  const W = canvas.width, H = canvas.height, pad = 90;
+  const rw = maxX - minX || 1, rh = maxY - minY || 1;
+  zoom = Math.max(1.5, Math.min(25, Math.min((W-pad*2)/rw, (H-pad*2)/rh) * 0.80));
+  panX = W/2 - ((minX+maxX)/2) * zoom;
+  panY = H/2 - ((minY+maxY)/2) * zoom;
+  render();
+}}
+
+function onRoomChange(val) {{
+  focusRoomName = val;
+  applyFocus(val);
+}}
+
+// ── floor change: fetch rooms from Platform API ────────────────────────
+function onFloorChange(floorId) {{
+  if (!floorId) return;
+  focusRoomName = "";
+  selRoom.innerHTML = '<option value="">— All rooms —</option>';
+  fetch(PLATFORM + "/floors/" + floorId + "/rooms")
+    .then(r => r.json())
+    .then(data => {{
+      rooms = data.map(r => ({{name: r.name, polygon: r.polygon || []}}));
+      selRoom.innerHTML = '<option value="">— All rooms —</option>' +
+        rooms.map(r => `<option value="${{r.name}}">${{r.name}}</option>`).join("");
+      fitAll();
+      render();
+    }})
+    .catch(() => {{}});
+}}
+
+// ── rendering ──────────────────────────────────────────────────────────
 function render() {{
   const W = canvas.width, H = canvas.height;
-  const sx = W / fw, sy = H / fh;
   ctx.fillStyle = "#111";
   ctx.fillRect(0, 0, W, H);
 
-  // Grid
-  ctx.strokeStyle = "#222";
-  ctx.lineWidth = 0.5;
-  for (let x = 0; x <= fw; x++) {{
-    ctx.beginPath(); ctx.moveTo(x*sx, 0); ctx.lineTo(x*sx, H); ctx.stroke();
-  }}
-  for (let y = 0; y <= fh; y++) {{
-    ctx.beginPath(); ctx.moveTo(0, y*sy); ctx.lineTo(W, y*sy); ctx.stroke();
-  }}
-
-  // Rooms
   rooms.forEach(r => {{
-    if (!r.polygon || !r.polygon.length) return;
+    if (!r.polygon?.length) return;
+    const focused = r.name === focusRoomName;
     ctx.beginPath();
-    r.polygon.forEach(([px,py],i) => i===0 ? ctx.moveTo(px*sx,py*sy) : ctx.lineTo(px*sx,py*sy));
+    r.polygon.forEach(([px,py],i) =>
+      i === 0 ? ctx.moveTo(toCx(px), toCy(py)) : ctx.lineTo(toCx(px), toCy(py))
+    );
     ctx.closePath();
-    ctx.fillStyle = "rgba(99,102,241,0.12)";
+    ctx.fillStyle   = focused ? "rgba(99,102,241,0.28)" : "rgba(99,102,241,0.10)";
+    ctx.strokeStyle = focused ? "#818cf8" : "#6366f1";
+    ctx.lineWidth   = focused ? 2.5 : 1.5;
     ctx.fill();
-    ctx.strokeStyle = "#6366f1";
-    ctx.lineWidth = 1.5;
     ctx.stroke();
-    // Label
-    const cx = r.polygon.reduce((s,[px])=>s+px,0)/r.polygon.length;
-    const cy = r.polygon.reduce((s,[,py])=>s+py,0)/r.polygon.length;
-    ctx.fillStyle = "#a5b4fc";
-    ctx.font = Math.max(12, Math.min(18, W/30)) + "px sans-serif";
+    const cx = r.polygon.reduce((s,[x])=>s+x,0) / r.polygon.length;
+    const cy = r.polygon.reduce((s,[,y])=>s+y,0) / r.polygon.length;
+    const fs = Math.max(9, Math.min(15, zoom * 0.55));
+    ctx.fillStyle = focused ? "#c7d2fe" : "#a5b4fc";
+    ctx.font = (focused ? "bold " : "") + fs + "px sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText(r.name, cx*sx, cy*sy);
+    ctx.fillText(r.name, toCx(cx), toCy(cy));
   }});
 
-  // Devices
-  const dotR = Math.max(8, Math.min(16, W/60));
+  const dotR = Math.max(6, Math.min(14, zoom * 0.45));
   devices.forEach(d => {{
-    const dx = (d.x||0)*sx, dy = (d.y||0)*sy;
-    // Glow
+    const dx = toCx(d.x||0), dy = toCy(d.y||0);
     ctx.beginPath(); ctx.arc(dx, dy, dotR+4, 0, Math.PI*2);
     ctx.fillStyle = d.reachable ? "rgba(34,197,94,0.25)" : "rgba(248,113,113,0.25)";
     ctx.fill();
-    // Dot
     ctx.beginPath(); ctx.arc(dx, dy, dotR, 0, Math.PI*2);
     ctx.fillStyle = d.reachable ? "#22c55e" : "#f87171";
     ctx.fill();
     ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.5; ctx.stroke();
-    // Label
     ctx.fillStyle = "#fff";
-    ctx.font = "bold " + Math.max(10, dotR) + "px sans-serif";
+    ctx.font = "bold " + Math.max(9, dotR) + "px sans-serif";
     ctx.textAlign = "center";
-    ctx.fillText(d.device_id, dx, dy - dotR - 6);
-    // Room label below
+    ctx.fillText(d.device_id, dx, dy - dotR - 5);
     if (d.room_id) {{
       ctx.fillStyle = "#a1a1aa";
-      ctx.font = (dotR - 2) + "px sans-serif";
-      ctx.fillText(d.room_id, dx, dy + dotR + 10);
+      ctx.font = Math.max(8, dotR-2) + "px sans-serif";
+      ctx.fillText(d.room_id, dx, dy + dotR + 9);
     }}
   }});
 }}
 
+// ── zoom (wheel) ───────────────────────────────────────────────────────
+canvas.addEventListener("wheel", e => {{
+  e.preventDefault();
+  const f = e.deltaY < 0 ? 1.12 : 1/1.12;
+  const rect = canvas.getBoundingClientRect();
+  const ox = e.clientX - rect.left, oy = e.clientY - rect.top;
+  const nz = Math.max(0.2, Math.min(30, zoom * f));
+  panX = ox - (ox - panX) * nz / zoom;
+  panY = oy - (oy - panY) * nz / zoom;
+  zoom = nz;
+  render();
+}}, {{passive: false}});
+
+// ── pan (drag) ─────────────────────────────────────────────────────────
+canvas.addEventListener("mousedown", e => {{
+  if (e.button !== 0) return;
+  isDragging = true;
+  dragSX = e.clientX; dragSY = e.clientY;
+  pStartX = panX;     pStartY = panY;
+  canvas.classList.add("dragging");
+}});
+window.addEventListener("mousemove", e => {{
+  if (!isDragging) return;
+  panX = pStartX + (e.clientX - dragSX);
+  panY = pStartY + (e.clientY - dragSY);
+  render();
+}});
+window.addEventListener("mouseup", () => {{
+  isDragging = false;
+  canvas.classList.remove("dragging");
+}});
+
+// ── Platform API: load floor hierarchy ────────────────────────────────
+async function loadFloors() {{
+  try {{
+    const campuses  = await fetch(PLATFORM + "/campuses").then(r => r.json());
+    if (!campuses.length) return;
+    const buildings = await fetch(PLATFORM + "/campuses/" + campuses[0].id + "/buildings").then(r => r.json());
+    if (!buildings.length) return;
+    const floors    = await fetch(PLATFORM + "/buildings/" + buildings[0].id + "/floors").then(r => r.json());
+    selFloor.innerHTML = floors
+      .map(f => `<option value="${{f.id}}">${{f.name}}</option>`)
+      .join("");
+    if (floors.length) {{
+      fw = floors[0].width_m  || fw;
+      fh = floors[0].height_m || fh;
+      onFloorChange(floors[0].id);
+    }}
+  }} catch(_) {{
+    selFloor.innerHTML = '<option value="">Platform offline</option>';
+  }}
+}}
+
+// ── Engine polling: live device positions ─────────────────────────────
 async function poll() {{
   try {{
-    const res = await fetch(ENGINE + "/map?method=" + METHOD);
+    const res  = await fetch(ENGINE + "/map?method=" + METHOD);
     if (!res.ok) throw new Error(res.status);
     const data = await res.json();
-    rooms   = data.rooms   || [];
     devices = data.devices || [];
-    if (data.floor) {{
-      fw = data.floor.width_m  || 20;
-      fh = data.floor.height_m || 20;
+    if (data.floor && !rooms.length) {{
+      fw = data.floor.width_m  || fw;
+      fh = data.floor.height_m || fh;
+      fitAll();
     }}
-    status.textContent = devices.length + " device(s) · " + new Date().toLocaleTimeString();
-    footer.textContent = devices.map(d =>
-      d.device_id + " → " + (d.room_id||"?") + " (" + (d.x||0).toFixed(1) + ", " + (d.y||0).toFixed(1) + ")"
+    statusEl.textContent = devices.length + " device(s) · " + new Date().toLocaleTimeString();
+    footer.textContent   = devices.map(d =>
+      d.device_id + " → " + (d.room_id||"?") +
+      " (" + (d.x||0).toFixed(1) + ", " + (d.y||0).toFixed(1) + ")"
     ).join("   ·   ") || "No devices";
     render();
   }} catch(e) {{
-    status.textContent = "Engine offline: " + e.message;
+    statusEl.textContent = "Engine offline: " + e.message;
   }}
 }}
 
 resize();
+loadFloors();
 poll();
 setInterval(poll, 2000);
 </script>
@@ -673,6 +790,8 @@ class App:
             min_size  = (1200, 700),
             js_api    = self._js_api,
             frameless = True,   # custom dark title bar rendered in HTML
+            easy_drag = False,  # disable pywebview's injected drag JS; rely on
+                                # CSS -webkit-app-region: drag (TopBar only)
         )
 
         # Give the JS API a reference to the window so the frontend

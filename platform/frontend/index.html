@@ -77,12 +77,24 @@
       svg text {
         user-select: none;
       }
-      /* Frameless-window drag region support */
+      /* Frameless-window drag region support.
+         Default the entire body to no-drag so only explicitly marked
+         elements (the TopBar) can move the window.                        */
+      body {
+        -webkit-app-region: no-drag;
+        app-region: no-drag;
+      }
       .drag-region {
         -webkit-app-region: drag;
         app-region: drag;
       }
       .no-drag {
+        -webkit-app-region: no-drag;
+        app-region: no-drag;
+      }
+      /* When the map is in fullscreen mode, kill ALL drag regions so the
+         window cannot be moved by clicking blank space in the overlay.     */
+      body.map-fullscreen .drag-region {
         -webkit-app-region: no-drag;
         app-region: no-drag;
       }
@@ -777,14 +789,14 @@
       // ─── NAV / LAYOUT ────────────────────────────────────────────────────
 
       const PAGES = [
-        { id: "wizard",    label: "Setup",          icon: "\u2699\uFE0F" },
-        { id: "localize",  label: "Localization",   icon: "\uD83C\uDFF7\uFE0F" },
-        { id: "survey",    label: "Survey",          icon: "\uD83D\uDCCD" },
-        { id: "map",       label: "Map",             icon: "\uD83D\uDDFA\uFE0F" },
-        { id: "devices",   label: "Devices",         icon: "\uD83D\uDCE1" },
-        { id: "logs",      label: "Logs",            icon: "\uD83D\uDCCB" },
-        { id: "espflash",  label: "Flash ESP",       icon: "\u26A1" },
-        { id: "analytics", label: "Analytics",        icon: "\uD83D\uDCCA" },
+        { id: "wizard", label: "Setup", icon: "\u2699\uFE0F" },
+        { id: "localize", label: "Localization", icon: "\uD83C\uDFF7\uFE0F" },
+        { id: "survey", label: "Survey", icon: "\uD83D\uDCCD" },
+        { id: "map", label: "Map", icon: "\uD83D\uDDFA\uFE0F" },
+        { id: "devices", label: "Devices", icon: "\uD83D\uDCE1" },
+        { id: "logs", label: "Logs", icon: "\uD83D\uDCCB" },
+        { id: "espflash", label: "Flash ESP", icon: "\u26A1" },
+        { id: "analytics", label: "Analytics", icon: "\uD83D\uDCCA" },
       ];
 
       // ── SVG icon helpers ────────────────────────────────────────────────────
@@ -977,10 +989,10 @@
                 "Retrying every 5s…",
               ),
             ),
-          // Page content
+          // Page content — no-drag prevents pywebview from treating content clicks as window drags
           h(
             "main",
-            { className: "flex-1 overflow-y-auto bg-surface" },
+            { className: "no-drag flex-1 overflow-y-auto bg-surface" },
             h("div", { className: "max-w-6xl mx-auto px-8 py-8" }, children),
           ),
         );
@@ -1627,6 +1639,8 @@
         const [vb, setVb] = useState({ x: 0, y: 0, w: 900, h: 600 });
         const vbRef = useRef({ x: 0, y: 0, w: 900, h: 600 });
         const [panDrag, setPanDrag] = useState(null); // {clientX, clientY, vbSnap}
+        // Cursor position in floor-plan metres (shown as a HUD overlay)
+        const [cursorPos, setCursorPos] = useState(null); // null | {x, y}
         // DXF import state
         const [dxfWalls, setDxfWalls] = useState([]);
         const [dxfRooms, setDxfRooms] = useState([]);
@@ -2137,6 +2151,12 @@
           }
         };
         const handleSvgMouseMove = (e) => {
+          // Always track cursor position in floor-plan metres
+          const svgPtC = clientToSVG(e);
+          const cx = Math.max(0, Math.min(fw, fromSvgX(svgPtC.x)));
+          const cy = Math.max(0, Math.min(fh, fromSvgY(svgPtC.y)));
+          setCursorPos({ x: cx, y: cy });
+
           // Pan viewport
           if (panDrag) {
             const svgEl = svgRef.current;
@@ -2570,7 +2590,29 @@
             // Canvas
             h(
               "div",
-              { className: "flex-1 min-w-0" },
+              { className: "flex-1 min-w-0", style: { position: "relative" } },
+              // Coordinate HUD — bottom-left corner of the canvas
+              cursorPos &&
+                h(
+                  "div",
+                  {
+                    style: {
+                      position: "absolute",
+                      bottom: 8,
+                      left: 8,
+                      zIndex: 10,
+                      background: "rgba(0,0,0,0.65)",
+                      color: "#e2e8f0",
+                      fontSize: 11,
+                      fontFamily: "monospace",
+                      padding: "3px 8px",
+                      borderRadius: 4,
+                      pointerEvents: "none",
+                      userSelect: "none",
+                    },
+                  },
+                  `x: ${cursorPos.x.toFixed(2)} m  y: ${cursorPos.y.toFixed(2)} m`,
+                ),
               h(
                 "svg",
                 {
@@ -2586,7 +2628,10 @@
                   onMouseDown: handleSvgMouseDown,
                   onMouseMove: handleSvgMouseMove,
                   onMouseUp: handleSvgMouseUp,
-                  onMouseLeave: handleSvgMouseUp,
+                  onMouseLeave: (e) => {
+                    handleSvgMouseUp(e);
+                    setCursorPos(null);
+                  },
                   onContextMenu: handleContextMenu,
                 },
                 // Background grid (snap grid lines)
@@ -4177,16 +4222,37 @@
         rooms = [],
         anchors = [],
         devices = [],
+        accessLevels = [],
         showFpGrid = false,
         gridSize = 1.0,
         className = "",
         dxfWalls = [],
         dxfRooms = [],
+        focusRoomId = null,
+        rotation = 0,
+        showAnchors = true,
+        showRoomColors = true,
+        showRoomBorders = true,
+        showAnchorLabels = true,
+        showTagLabels = true,
+        // ── New overlay props ─────────────────────────────────────────────
+        showRangeCircles = false, // dashed circles: each anchor radius = dist_m to device
+        showRangeLines = false, // line from anchor to device + distance label
+        showAllMethods = false, // ghost pins for every active method
+        anchorRanging = {}, // {device_id: {anchor_id: {x,y,rssi_dbm,dist_m,weight}}}
+        allMethodsData = {}, // {method_key: [{device_id,x,y,room_id}]}
       }) {
         const PADDING = 40;
         const svgRef = useRef(null);
         const [dims, setDims] = useState({ w: 800, h: 600 });
+        const [zoom, setZoom] = useState(1);
+        const [pan, setPan] = useState({ x: 0, y: 0 });
+        // Use a ref for drag detection to avoid stale-closure issues in global listeners
+        const isDraggingRef = useRef(false);
+        const [dragging, setDragging] = useState(false); // drives cursor CSS only
+        const dragRef = useRef({ sx: 0, sy: 0, px: 0, py: 0 });
 
+        // Responsive sizing
         useEffect(() => {
           const ro = new ResizeObserver((entries) => {
             for (const e of entries) {
@@ -4202,23 +4268,126 @@
           return () => ro.disconnect();
         }, [width, height]);
 
-        const fw = width || 10;
-        const fh = height || 10;
+        const fw = width || 10,
+          fh = height || 10;
         const scaleX = (dims.w - PADDING * 2) / fw;
         const scaleY = (dims.h - PADDING * 2) / fh;
         const scale = Math.min(scaleX, scaleY);
         const tx = (v) => PADDING + v * scale;
         const ty = (v) => PADDING + v * scale;
 
-        const ROOM_COLORS = [
-          "#3b82f620",
-          "#10b98120",
-          "#f59e0b20",
-          "#ef444420",
-          "#8b5cf620",
-          "#06b6d420",
+        // Wheel zoom toward cursor
+        const handleWheel = useCallback(
+          (e) => {
+            e.preventDefault();
+            const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+            const rect = svgRef.current?.getBoundingClientRect();
+            if (!rect) return;
+            const mx = ((e.clientX - rect.left) * dims.w) / rect.width;
+            const my = ((e.clientY - rect.top) * dims.h) / rect.height;
+            setZoom((z) => {
+              const nz = Math.max(0.5, Math.min(14, z * factor));
+              setPan((p) => ({
+                x: mx - ((mx - p.x) * nz) / z,
+                y: my - ((my - p.y) * nz) / z,
+              }));
+              return nz;
+            });
+          },
+          [dims],
+        );
+
+        useEffect(() => {
+          const el = svgRef.current;
+          if (!el) return;
+          el.addEventListener("wheel", handleWheel, { passive: false });
+          return () => el.removeEventListener("wheel", handleWheel);
+        }, [handleWheel]);
+
+        // Global mouse listeners so pan continues even when cursor leaves the SVG
+        useEffect(() => {
+          const onMove = (e) => {
+            if (!isDraggingRef.current) return;
+            const { sx, sy, px, py } = dragRef.current;
+            setPan({ x: px + e.clientX - sx, y: py + e.clientY - sy });
+          };
+          const onUp = () => {
+            if (!isDraggingRef.current) return;
+            isDraggingRef.current = false;
+            setDragging(false);
+          };
+          window.addEventListener("mousemove", onMove);
+          window.addEventListener("mouseup", onUp);
+          return () => {
+            window.removeEventListener("mousemove", onMove);
+            window.removeEventListener("mouseup", onUp);
+          };
+        }, []); // eslint-disable-line
+
+        const handleMouseDown = (e) => {
+          if (e.button !== 0) return;
+          isDraggingRef.current = true;
+          setDragging(true);
+          dragRef.current = {
+            sx: e.clientX,
+            sy: e.clientY,
+            px: pan.x,
+            py: pan.y,
+          };
+        };
+
+        // Room focus — animate zoom+pan to fit the selected room
+        useEffect(() => {
+          if (!focusRoomId) {
+            setZoom(1);
+            setPan({ x: 0, y: 0 });
+            return;
+          }
+          const room = rooms.find((r) => String(r.id) === String(focusRoomId));
+          if (!room?.polygon?.length) return;
+          const xs = room.polygon.map((p) => p[0]);
+          const ys = room.polygon.map((p) => p[1]);
+          const minX = Math.min(...xs),
+            maxX = Math.max(...xs);
+          const minY = Math.min(...ys),
+            maxY = Math.max(...ys);
+          const rw = (maxX - minX) * scale || scale * 0.5;
+          const rh = (maxY - minY) * scale || scale * 0.5;
+          const margin = 80;
+          const nz = Math.max(
+            1.5,
+            Math.min(
+              14,
+              Math.min((dims.w - margin) / rw, (dims.h - margin) / rh) * 0.72,
+            ),
+          );
+          const contentCX = tx((minX + maxX) / 2);
+          const contentCY = ty((minY + maxY) / 2);
+          setPan({
+            x: dims.w / 2 - contentCX * nz,
+            y: dims.h / 2 - contentCY * nz,
+          });
+          setZoom(nz);
+        }, [focusRoomId, rooms]); // eslint-disable-line
+
+        // Access-level colour map
+        const alMap = useMemo(() => {
+          const m = {};
+          (accessLevels || []).forEach((a) => {
+            m[a.id] = a.color;
+          });
+          return m;
+        }, [accessLevels]);
+
+        const DEF_FILLS = [
+          "#3b82f628",
+          "#10b98128",
+          "#f59e0b28",
+          "#ef444428",
+          "#8b5cf628",
+          "#06b6d428",
         ];
-        const ROOM_BORDERS = [
+        const DEF_BORDERS = [
           "#3b82f6",
           "#10b981",
           "#f59e0b",
@@ -4228,287 +4397,367 @@
         ];
 
         return h(
-          "svg",
-          {
-            ref: svgRef,
-            viewBox: `0 0 ${dims.w} ${dims.h}`,
-            className: `${className} bg-panel rounded-lg border border-border`,
-            style: { maxHeight: 500 },
-          },
-          // Grid
-          ...Array.from({ length: Math.ceil(fw) + 1 }, (_, i) =>
-            h("line", {
-              key: `gx${i}`,
-              x1: tx(i),
-              y1: ty(0),
-              x2: tx(i),
-              y2: ty(fh),
-              stroke: "#e5e7eb",
-              strokeWidth: 0.5,
-            }),
-          ),
-          ...Array.from({ length: Math.ceil(fh) + 1 }, (_, i) =>
-            h("line", {
-              key: `gy${i}`,
-              x1: tx(0),
-              y1: ty(i),
-              x2: tx(fw),
-              y2: ty(i),
-              stroke: "#e5e7eb",
-              strokeWidth: 0.5,
-            }),
-          ),
-          // DXF imported room outlines (before walls so walls draw on top)
-          ...dxfRooms.map((rm, ri) => {
-            if (!rm.polygon || rm.polygon.length < 3) return null;
-            const pts = rm.polygon
-              .map((p) => `${tx(p[0])},${ty(p[1])}`)
-              .join(" ");
-            const cx =
-              rm.polygon.reduce((s, p) => s + p[0], 0) / rm.polygon.length;
-            const cy =
-              rm.polygon.reduce((s, p) => s + p[1], 0) / rm.polygon.length;
-            return h(
-              "g",
-              { key: `dr${ri}` },
-              h("polygon", {
-                points: pts,
-                fill: "#3b82f610",
-                stroke: "#3b82f650",
-                strokeWidth: 1,
-                strokeDasharray: "4,3",
-              }),
-              h(
-                "text",
-                {
-                  x: tx(cx),
-                  y: ty(cy),
-                  textAnchor: "middle",
-                  dominantBaseline: "central",
-                  className: "text-[10px]",
-                  fill: "#3b82f6",
-                  opacity: 0.7,
-                },
-                rm.name,
-              ),
-            );
-          }),
-          // DXF wall segments
-          ...dxfWalls.map((w, wi) =>
-            h("line", {
-              key: `dw${wi}`,
-              x1: tx(w.x1),
-              y1: ty(w.y1),
-              x2: tx(w.x2),
-              y2: ty(w.y2),
-              stroke: "#6b7280",
-              strokeWidth: 1.5,
-              strokeLinecap: "round",
-            }),
-          ),
-          // Floor boundary
-          h("rect", {
-            x: tx(0),
-            y: ty(0),
-            width: fw * scale,
-            height: fh * scale,
-            fill: "none",
-            stroke: "#374151",
-            strokeWidth: 2,
-            strokeDasharray: "6,3",
-          }),
-          // Axis labels
+          "div",
+          { style: { position: "relative" } },
           h(
-            "text",
+            "svg",
             {
-              x: tx(fw / 2),
-              y: dims.h - 8,
-              textAnchor: "middle",
-              className: "text-[10px] fill-gray-400",
+              ref: svgRef,
+              viewBox: `0 0 ${dims.w} ${dims.h}`,
+              className: `no-drag ${className} w-full bg-panel rounded-lg border border-border select-none`,
+              style: {
+                display: "block",
+                cursor: dragging ? "grabbing" : "grab",
+                transform: rotation ? `rotate(${rotation}deg)` : undefined,
+                transformOrigin: "center",
+              },
+              onMouseDown: handleMouseDown,
             },
-            `${fw}m`,
-          ),
-          h(
-            "text",
-            {
-              x: 10,
-              y: ty(fh / 2),
-              textAnchor: "middle",
-              className: "text-[10px] fill-gray-400",
-              transform: `rotate(-90, 10, ${ty(fh / 2)})`,
-            },
-            `${fh}m`,
-          ),
-          // Rooms
-          ...rooms.map((r, i) => {
-            const poly = r.polygon;
-            if (!poly || poly.length < 3) return null;
-            const points = poly.map((p) => `${tx(p[0])},${ty(p[1])}`).join(" ");
-            const cx = poly.reduce((s, p) => s + p[0], 0) / poly.length;
-            const cy = poly.reduce((s, p) => s + p[1], 0) / poly.length;
-            return h(
+            h(
               "g",
-              { key: `room-${i}` },
-              h("polygon", {
-                points,
-                fill: ROOM_COLORS[i % ROOM_COLORS.length],
-                stroke: ROOM_BORDERS[i % ROOM_BORDERS.length],
-                strokeWidth: 1.5,
-              }),
-              h(
-                "text",
-                {
-                  x: tx(cx),
-                  y: ty(cy),
-                  textAnchor: "middle",
-                  dominantBaseline: "central",
-                  className: "text-[11px] font-medium",
-                  fill: ROOM_BORDERS[i % ROOM_BORDERS.length],
-                },
-                r.name,
+              { transform: `translate(${pan.x},${pan.y}) scale(${zoom})` },
+              // DXF walls
+              ...dxfWalls.map((w, wi) =>
+                h("line", {
+                  key: `dw${wi}`,
+                  x1: tx(w.x1),
+                  y1: ty(w.y1),
+                  x2: tx(w.x2),
+                  y2: ty(w.y2),
+                  stroke: "#6b7280",
+                  strokeWidth: 1.5,
+                  strokeLinecap: "round",
+                }),
               ),
-            );
-          }),
-          // Fingerprint grid overlay (Map View toggle)
-          ...(showFpGrid
-            ? rooms.map((r, ri) => {
+              // DXF room outlines
+              ...dxfRooms.map((rm, ri) => {
+                if (!rm.polygon?.length) return null;
+                const pts = rm.polygon
+                  .map((p) => `${tx(p[0])},${ty(p[1])}`)
+                  .join(" ");
+                const cx =
+                  rm.polygon.reduce((s, p) => s + p[0], 0) / rm.polygon.length;
+                const cy =
+                  rm.polygon.reduce((s, p) => s + p[1], 0) / rm.polygon.length;
+                return h(
+                  "g",
+                  { key: `dr${ri}` },
+                  h("polygon", {
+                    points: pts,
+                    fill: "#3b82f610",
+                    stroke: "#3b82f650",
+                    strokeWidth: 1,
+                    strokeDasharray: "4,3",
+                  }),
+                  h(
+                    "text",
+                    {
+                      x: tx(cx),
+                      y: ty(cy),
+                      textAnchor: "middle",
+                      dominantBaseline: "central",
+                      fontSize: 10,
+                      fill: "#3b82f6",
+                      opacity: 0.7,
+                    },
+                    rm.name,
+                  ),
+                );
+              }),
+              // Floor boundary
+              h("rect", {
+                x: tx(0),
+                y: ty(0),
+                width: fw * scale,
+                height: fh * scale,
+                fill: "none",
+                stroke: "#374151",
+                strokeWidth: 2,
+                strokeDasharray: "6,3",
+              }),
+              // Rooms
+              ...rooms.map((r, i) => {
                 const poly = r.polygon;
                 if (!poly || poly.length < 3) return null;
-                const gs = r.grid_size_override || gridSize;
-                const xs = poly.map((p) => p[0]),
-                  ys = poly.map((p) => p[1]);
-                const minX = Math.floor(Math.min(...xs) / gs) * gs;
-                const maxX = Math.ceil(Math.max(...xs) / gs) * gs;
-                const minY = Math.floor(Math.min(...ys) / gs) * gs;
-                const maxY = Math.ceil(Math.max(...ys) / gs) * gs;
-                function pipArr(px, py, verts) {
-                  let inside = false;
-                  for (
-                    let i = 0, j = verts.length - 1;
-                    i < verts.length;
-                    j = i++
-                  ) {
-                    const xi = verts[i][0],
-                      yi = verts[i][1],
-                      xj = verts[j][0],
-                      yj = verts[j][1];
-                    if (
-                      yi > py !== yj > py &&
-                      px < ((xj - xi) * (py - yi)) / (yj - yi) + xi
-                    )
-                      inside = !inside;
-                  }
-                  return inside;
-                }
-                const cells = [];
-                for (let gx = minX; gx < maxX; gx += gs) {
-                  for (let gy = minY; gy < maxY; gy += gs) {
-                    const cx = gx + gs / 2,
-                      cy = gy + gs / 2;
-                    if (pipArr(cx, cy, poly)) {
-                      cells.push(
-                        h("rect", {
-                          key: `gc${ri}-${gx}-${gy}`,
-                          x: tx(gx),
-                          y: ty(gy),
-                          width: gs * scale,
-                          height: gs * scale,
-                          fill: "none",
-                          stroke: "#8b5cf680",
-                          strokeWidth: 0.7,
-                          strokeDasharray: "2,2",
-                        }),
-                      );
-                      cells.push(
-                        h("circle", {
-                          key: `gd${ri}-${gx}-${gy}`,
-                          cx: tx(cx),
-                          cy: ty(cy),
-                          r: 2,
-                          fill: "#8b5cf660",
-                        }),
-                      );
+                const pts = poly
+                  .map((p) => `${tx(p[0])},${ty(p[1])}`)
+                  .join(" ");
+                const cx = poly.reduce((s, p) => s + p[0], 0) / poly.length;
+                const cy = poly.reduce((s, p) => s + p[1], 0) / poly.length;
+                const isFocused = String(r.id) === String(focusRoomId);
+                const alColor = alMap[r.access_level_id];
+                const fillC = showRoomColors
+                  ? alColor
+                    ? alColor + "35"
+                    : DEF_FILLS[i % DEF_FILLS.length]
+                  : "#1f1f2818";
+                const strkC = showRoomColors
+                  ? alColor || DEF_BORDERS[i % DEF_BORDERS.length]
+                  : "#3a3a4a";
+                return h(
+                  "g",
+                  { key: `room-${i}` },
+                  h("polygon", {
+                    points: pts,
+                    fill: fillC,
+                    stroke: showRoomBorders
+                      ? isFocused
+                        ? "#ae5630"
+                        : strkC
+                      : "none",
+                    strokeWidth: isFocused ? 3 : 1.5,
+                  }),
+                  h(
+                    "text",
+                    {
+                      x: tx(cx),
+                      y: ty(cy),
+                      textAnchor: "middle",
+                      dominantBaseline: "central",
+                      fontSize: 11,
+                      fontWeight: "500",
+                      fill: strkC,
+                    },
+                    r.name,
+                  ),
+                );
+              }),
+              // Fingerprint grid overlay
+              ...(showFpGrid
+                ? rooms.map((r, ri) => {
+                    const poly = r.polygon;
+                    if (!poly || poly.length < 3) return null;
+                    const gs = r.grid_size_override || gridSize;
+                    const xs = poly.map((p) => p[0]),
+                      ys = poly.map((p) => p[1]);
+                    const minX = Math.floor(Math.min(...xs) / gs) * gs;
+                    const maxX = Math.ceil(Math.max(...xs) / gs) * gs;
+                    const minY = Math.floor(Math.min(...ys) / gs) * gs;
+                    const maxY = Math.ceil(Math.max(...ys) / gs) * gs;
+                    function pip(px, py, v) {
+                      let inside = false;
+                      for (let i = 0, j = v.length - 1; i < v.length; j = i++) {
+                        const xi = v[i][0],
+                          yi = v[i][1],
+                          xj = v[j][0],
+                          yj = v[j][1];
+                        if (
+                          yi > py !== yj > py &&
+                          px < ((xj - xi) * (py - yi)) / (yj - yi) + xi
+                        )
+                          inside = !inside;
+                      }
+                      return inside;
                     }
-                  }
-                }
-                return h("g", { key: `fpg-${ri}` }, ...cells);
-              })
-            : []),
-          // Anchors
-          ...anchors.map((a, i) =>
-            h(
-              "g",
-              { key: `anchor-${i}` },
-              h("rect", {
-                x: tx(a.x_m) - 8,
-                y: ty(a.y_m) - 8,
-                width: 16,
-                height: 16,
-                rx: 3,
-                fill: "#1e40af",
-                stroke: "#fff",
-                strokeWidth: 2,
-              }),
-              h(
-                "text",
-                {
-                  x: tx(a.x_m),
-                  y: ty(a.y_m),
-                  textAnchor: "middle",
-                  dominantBaseline: "central",
-                  className: "text-[8px] font-bold",
-                  fill: "#fff",
-                },
-                (a.anchor_id || "")
-                  .replace("AP", "")
-                  .replace("ESP_", "E")
-                  .slice(0, 2),
-              ),
-              h(
-                "text",
-                {
-                  x: tx(a.x_m),
-                  y: ty(a.y_m) + 18,
-                  textAnchor: "middle",
-                  className: "text-[9px]",
-                  fill: "#6b7280",
-                },
-                a.anchor_id,
-              ),
-            ),
-          ),
-          // Devices
-          ...devices.map((d, i) =>
-            h(
-              "g",
-              { key: `dev-${i}` },
-              h("circle", {
-                cx: tx(d.x || 0),
-                cy: ty(d.y || 0),
-                r: 10,
-                fill: d.reachable ? "#10b981" : "#9ca3af",
-                stroke: "#fff",
-                strokeWidth: 2.5,
-              }),
-              h("circle", {
-                cx: tx(d.x || 0),
-                cy: ty(d.y || 0),
-                r: 16,
-                fill: "none",
-                stroke: d.reachable ? "#10b98140" : "none",
-                strokeWidth: 2,
-                className: d.reachable ? "pulse-dot" : "",
-              }),
-              h(
-                "text",
-                {
-                  x: tx(d.x || 0),
-                  y: ty(d.y || 0) + 22,
-                  textAnchor: "middle",
-                  className: "text-[9px] font-medium",
-                  fill: "#374151",
-                },
-                d.device_id,
+                    const cells = [];
+                    for (let gx = minX; gx < maxX; gx += gs) {
+                      for (let gy = minY; gy < maxY; gy += gs) {
+                        const cx = gx + gs / 2,
+                          cy = gy + gs / 2;
+                        if (pip(cx, cy, poly)) {
+                          cells.push(
+                            h("rect", {
+                              key: `gc${ri}-${gx}-${gy}`,
+                              x: tx(gx),
+                              y: ty(gy),
+                              width: gs * scale,
+                              height: gs * scale,
+                              fill: "none",
+                              stroke: "#8b5cf680",
+                              strokeWidth: 0.7,
+                              strokeDasharray: "2,2",
+                            }),
+                          );
+                          cells.push(
+                            h("circle", {
+                              key: `gd${ri}-${gx}-${gy}`,
+                              cx: tx(cx),
+                              cy: ty(cy),
+                              r: 2,
+                              fill: "#8b5cf660",
+                            }),
+                          );
+                        }
+                      }
+                    }
+                    return h("g", { key: `fpg-${ri}` }, ...cells);
+                  })
+                : []),
+              // Anchors
+              ...(showAnchors
+                ? anchors.map((a, i) =>
+                    h(
+                      "g",
+                      { key: `anchor-${i}` },
+                      h("rect", {
+                        x: tx(a.x_m) - 8,
+                        y: ty(a.y_m) - 8,
+                        width: 16,
+                        height: 16,
+                        rx: 3,
+                        fill: "#1e40af",
+                        stroke: "#fff",
+                        strokeWidth: 2,
+                      }),
+                      h(
+                        "text",
+                        {
+                          x: tx(a.x_m),
+                          y: ty(a.y_m),
+                          textAnchor: "middle",
+                          dominantBaseline: "central",
+                          fontSize: 8,
+                          fontWeight: "bold",
+                          fill: "#fff",
+                        },
+                        (a.anchor_id || "")
+                          .replace("AP", "")
+                          .replace("ESP_", "E")
+                          .slice(0, 2),
+                      ),
+                      showAnchorLabels &&
+                        h(
+                          "text",
+                          {
+                            x: tx(a.x_m),
+                            y: ty(a.y_m) + 18,
+                            textAnchor: "middle",
+                            fontSize: 9,
+                            fill: "#6b7280",
+                          },
+                          a.anchor_id,
+                        ),
+                    ),
+                  )
+                : []),
+              // ── Range circles (anchor → estimated distance ring) ─────────
+              ...(showRangeCircles
+                ? devices.flatMap((d) => {
+                    const ranging = anchorRanging[d.device_id] || {};
+                    return Object.entries(ranging).map(([aid, info]) =>
+                      h("circle", {
+                        key: `rc-${d.device_id}-${aid}`,
+                        cx: tx(info.x),
+                        cy: ty(info.y),
+                        r: Math.max(2, info.dist_m * scale),
+                        fill: "none",
+                        stroke: `rgba(236,72,153,${Math.max(0.2, info.weight * 0.7)})`,
+                        strokeWidth: 1.2,
+                        strokeDasharray: "5,3",
+                      }),
+                    );
+                  })
+                : []),
+              // ── Range lines (anchor → device) with distance + RSSI labels ─
+              ...(showRangeLines
+                ? devices.flatMap((d) => {
+                    const ranging = anchorRanging[d.device_id] || {};
+                    return Object.entries(ranging).flatMap(([aid, info]) => {
+                      const x1 = tx(info.x),
+                        y1 = ty(info.y);
+                      const x2 = tx(d.x || 0),
+                        y2 = ty(d.y || 0);
+                      const mx = (x1 + x2) / 2,
+                        my = (y1 + y2) / 2;
+                      const w = Math.max(0.2, info.weight);
+                      return [
+                        h("line", {
+                          key: `rl-${d.device_id}-${aid}`,
+                          x1,
+                          y1,
+                          x2,
+                          y2,
+                          stroke: `rgba(236,72,153,${(w * 0.6 + 0.2).toFixed(2)})`,
+                          strokeWidth: 1,
+                          strokeDasharray: "3,2",
+                        }),
+                        h(
+                          "text",
+                          {
+                            key: `rlt-${d.device_id}-${aid}`,
+                            x: mx,
+                            y: my - 3,
+                            textAnchor: "middle",
+                            fontSize: 8,
+                            fill: "#f9a8d4",
+                            style: { pointerEvents: "none" },
+                          },
+                          `${info.dist_m.toFixed(1)}m  ${info.rssi_dbm.toFixed(0)}dBm`,
+                        ),
+                      ];
+                    });
+                  })
+                : []),
+              // ── All-methods ghost pins ────────────────────────────────────
+              ...(showAllMethods
+                ? Object.entries(allMethodsData).flatMap(
+                    ([method, entries]) => {
+                      const color = METHOD_GHOST_COLORS[method] || "#6b7280";
+                      return (entries || []).map((e, i) =>
+                        h(
+                          "g",
+                          { key: `gm-${method}-${i}` },
+                          h("circle", {
+                            cx: tx(e.x || 0),
+                            cy: ty(e.y || 0),
+                            r: 6,
+                            fill: color + "55",
+                            stroke: color,
+                            strokeWidth: 1.5,
+                          }),
+                          h(
+                            "text",
+                            {
+                              x: tx(e.x || 0),
+                              y: ty(e.y || 0) - 9,
+                              textAnchor: "middle",
+                              fontSize: 7,
+                              fill: color,
+                              style: { pointerEvents: "none" },
+                            },
+                            (METHOD_INFO[method] || {}).label || method,
+                          ),
+                        ),
+                      );
+                    },
+                  )
+                : []),
+              // Devices
+              ...devices.map((d, i) =>
+                h(
+                  "g",
+                  { key: `dev-${i}` },
+                  h("circle", {
+                    cx: tx(d.x || 0),
+                    cy: ty(d.y || 0),
+                    r: 10,
+                    fill: d.reachable ? "#10b981" : "#9ca3af",
+                    stroke: "#fff",
+                    strokeWidth: 2.5,
+                  }),
+                  h("circle", {
+                    cx: tx(d.x || 0),
+                    cy: ty(d.y || 0),
+                    r: 16,
+                    fill: "none",
+                    stroke: d.reachable ? "#10b98140" : "none",
+                    strokeWidth: 2,
+                    className: d.reachable ? "pulse-dot" : "",
+                  }),
+                  showTagLabels &&
+                    h(
+                      "text",
+                      {
+                        x: tx(d.x || 0),
+                        y: ty(d.y || 0) + 22,
+                        textAnchor: "middle",
+                        fontSize: 9,
+                        fontWeight: "500",
+                        fill: "#e4e4e7",
+                      },
+                      d.device_id,
+                    ),
+                ),
               ),
             ),
           ),
@@ -4516,23 +4765,65 @@
       }
 
       function MapView() {
-        const { data: mapData, error: mapError } = usePolling(
-          () => engine.map(),
-          3000,
-        );
         const [selectedCampus, setSelectedCampus] = useState(null);
         const [selectedBuilding, setSelectedBuilding] = useState(null);
         const [selectedFloor, setSelectedFloor] = useState(null);
+        const [selectedRoomId, setSelectedRoomId] = useState(null);
         const [platformRooms, setPlatformRooms] = useState([]);
         const [platformAnchors, setPlatformAnchors] = useState([]);
-        const [showFpGrid, setShowFpGrid] = useState(false);
-        const [floorGridSize, setFloorGridSize] = useState(1.0);
+        const [accessLevels, setAccessLevels] = useState([]);
         const [mapDxfWalls, setMapDxfWalls] = useState([]);
         const [mapDxfRooms, setMapDxfRooms] = useState([]);
+        const [floorGridSize, setFloorGridSize] = useState(1.0);
+        const [rotation, setRotation] = useState(0);
+        const [isFullscreen, setIsFullscreen] = useState(false);
+        const [activeMethod, setActiveMethod] = useState("trilateration");
+        const mapContainerRef = useRef(null);
 
-        // Load hierarchy from platform
+        // Visual toggles
+        const [showAnchors, setShowAnchors] = useState(true);
+        const [showRoomColors, setShowRoomColors] = useState(true);
+        const [showRoomBorders, setShowRoomBorders] = useState(true);
+        const [showAnchorLabels, setShowAnchorLabels] = useState(true);
+        const [showTagLabels, setShowTagLabels] = useState(true);
+        const [showFpGrid, setShowFpGrid] = useState(false);
+        const [showRangeCircles, setShowRangeCircles] = useState(false);
+        const [showRangeLines, setShowRangeLines] = useState(false);
+        const [showAllMethods, setShowAllMethods] = useState(false);
+
+        // Engine data for selected method
+        const { data: mapData, error: mapError } = usePolling(
+          () => engine.map(activeMethod).catch(() => null),
+          3000,
+          [activeMethod],
+        );
+
+        // Anchor ranging detail (range circles + lines)
+        const { data: anchorDetailData } = usePolling(
+          () =>
+            showRangeCircles || showRangeLines
+              ? fetch(`${ENGINE_API}/map/anchor-detail`)
+                  .then((r) => r.json())
+                  .catch(() => null)
+              : Promise.resolve(null),
+          2000,
+          [showRangeCircles, showRangeLines],
+        );
+
+        // All-methods overlay
+        const { data: allMethodsRaw } = usePolling(
+          () =>
+            showAllMethods
+              ? fetch(`${ENGINE_API}/map/all`)
+                  .then((r) => r.json())
+                  .catch(() => null)
+              : Promise.resolve(null),
+          3000,
+          [showAllMethods],
+        );
+
+        // Hierarchy
         const { data: campuses } = useApi(() => platform.listCampuses());
-
         useEffect(() => {
           if (campuses?.length && !selectedCampus)
             setSelectedCampus(campuses[0]);
@@ -4561,9 +4852,10 @@
           if (floors?.length && !selectedFloor) setSelectedFloor(floors[0]);
         }, [floors]);
 
-        // Load rooms, anchors, and DXF data for selected floor
+        // Load floor geometry + access levels
         useEffect(() => {
           if (!selectedFloor) return;
+          setSelectedRoomId(null);
           platform
             .listRooms(selectedFloor.id)
             .then((r) => setPlatformRooms(r || []))
@@ -4582,7 +4874,28 @@
           setFloorGridSize(selectedFloor.default_grid_size_m || 1.0);
         }, [selectedFloor?.id]);
 
-        // Merge: prefer platform data, fallback to engine
+        useEffect(() => {
+          if (!selectedBuilding) return;
+          platform
+            .listAccessLevels(selectedBuilding.id)
+            .then((a) => setAccessLevels(a || []))
+            .catch(() => {});
+        }, [selectedBuilding?.id]);
+
+        // Pure React fullscreen — no browser Fullscreen API (avoids pywebview click-to-dismiss quirks).
+        // Stamp a body class so the CSS rule kills the TopBar drag-region while fullscreen is active,
+        // preventing the window from being moved by clicking blank space in the overlay.
+        const toggleFullscreen = () => setIsFullscreen((v) => !v);
+        useEffect(() => {
+          if (isFullscreen) {
+            document.body.classList.add("map-fullscreen");
+          } else {
+            document.body.classList.remove("map-fullscreen");
+          }
+          return () => document.body.classList.remove("map-fullscreen");
+        }, [isFullscreen]);
+
+        // Merge: prefer platform geometry, fallback to engine
         const rooms =
           platformRooms.length > 0 ? platformRooms : mapData?.rooms || [];
         const anchors = platformAnchors;
@@ -4591,12 +4904,70 @@
         const floorH =
           selectedFloor?.height_m || mapData?.floor?.height_m || 15;
 
+        const TOGGLES = [
+          {
+            key: "anchors",
+            label: "Anchors",
+            val: showAnchors,
+            set: setShowAnchors,
+          },
+          {
+            key: "roomColors",
+            label: "Room Colors",
+            val: showRoomColors,
+            set: setShowRoomColors,
+          },
+          {
+            key: "borders",
+            label: "Borders",
+            val: showRoomBorders,
+            set: setShowRoomBorders,
+          },
+          {
+            key: "apLabels",
+            label: "AP Labels",
+            val: showAnchorLabels,
+            set: setShowAnchorLabels,
+          },
+          {
+            key: "tagLabels",
+            label: "Tag Labels",
+            val: showTagLabels,
+            set: setShowTagLabels,
+          },
+          {
+            key: "fpGrid",
+            label: "FP Grid",
+            val: showFpGrid,
+            set: setShowFpGrid,
+          },
+          {
+            key: "rangeCircles",
+            label: "Range Circles",
+            val: showRangeCircles,
+            set: setShowRangeCircles,
+          },
+          {
+            key: "rangeLines",
+            label: "Range Lines",
+            val: showRangeLines,
+            set: setShowRangeLines,
+          },
+          {
+            key: "allMethods",
+            label: "All Methods",
+            val: showAllMethods,
+            set: setShowAllMethods,
+          },
+        ];
+
         return h(
           "div",
           { className: "fade-in" },
+          // ── Header ───────────────────────────────────────────────────────
           h(
             "div",
-            { className: "flex items-center justify-between mb-6" },
+            { className: "flex items-center justify-between mb-5" },
             h(
               "div",
               null,
@@ -4613,10 +4984,10 @@
             ),
             mapError && h(Badge, { color: "red" }, "Engine offline"),
           ),
-          // Floor selector
+          // ── Row 1: Hierarchy + Method selector ───────────────────────────
           h(
             "div",
-            { className: "flex items-center gap-3 mb-4 flex-wrap" },
+            { className: "flex items-center gap-2 mb-2 flex-wrap" },
             campuses?.length > 1 &&
               h(Select, {
                 value: selectedCampus?.id || "",
@@ -4626,7 +4997,7 @@
                   value: c.id,
                   label: c.name,
                 })),
-                className: "w-48",
+                className: "w-44",
               }),
             buildings?.length > 1 &&
               h(Select, {
@@ -4637,7 +5008,7 @@
                   value: b.id,
                   label: b.name,
                 })),
-                className: "w-48",
+                className: "w-44",
               }),
             floors?.length > 0 &&
               h(
@@ -4659,29 +5030,125 @@
                   ),
                 ),
               ),
-            // Fingerprint Grid toggle
+            // Room focus selector
+            rooms.length > 0 &&
+              h(
+                "select",
+                {
+                  value: selectedRoomId || "",
+                  onChange: (e) => setSelectedRoomId(e.target.value || null),
+                  className:
+                    "border border-border rounded-lg px-2.5 py-1.5 text-sm bg-surface text-ink",
+                  style: { minWidth: 130 },
+                },
+                h("option", { value: "" }, "All Rooms"),
+                rooms.map((r) =>
+                  h("option", { key: r.id, value: r.id }, r.name),
+                ),
+              ),
+            // Localization method overlay
             h(
-              "label",
+              "select",
               {
+                value: activeMethod,
+                onChange: (e) => setActiveMethod(e.target.value),
                 className:
-                  "flex items-center gap-2 text-sm text-ink-secondary cursor-pointer ml-auto",
+                  "border border-border rounded-lg px-2.5 py-1.5 text-sm bg-surface text-ink ml-auto",
+                style: { minWidth: 150 },
               },
-              h("input", {
-                type: "checkbox",
-                checked: showFpGrid,
-                onChange: (e) => setShowFpGrid(e.target.checked),
-                className: "rounded",
-              }),
-              "Fingerprint Grid",
+              Object.entries(METHOD_INFO).map(([k, v]) =>
+                h("option", { key: k, value: k }, v.label),
+              ),
             ),
           ),
-          // Map canvas
+          // ── Row 2: Toggle chips + Map actions ────────────────────────────
           h(
-            Card,
-            { className: "mb-6" },
+            "div",
+            { className: "flex items-center gap-1.5 mb-4 flex-wrap" },
+            TOGGLES.map((tg) =>
+              h(
+                "button",
+                {
+                  key: tg.key,
+                  onClick: () => tg.set(!tg.val),
+                  className: `px-2.5 py-1 rounded text-xs font-medium border transition-colors ${
+                    tg.val
+                      ? "bg-accent/15 text-accent border-accent/30"
+                      : "bg-surface-dim text-muted border-border"
+                  }`,
+                },
+                tg.label,
+              ),
+            ),
+            h(
+              "div",
+              { className: "ml-auto flex gap-2" },
+              h(
+                "button",
+                {
+                  onClick: () => setRotation((r) => (r + 90) % 360),
+                  className:
+                    "px-2.5 py-1 rounded text-xs font-medium border border-border bg-surface-dim text-ink-secondary hover:text-ink",
+                  title: "Rotate 90°",
+                },
+                `↻ ${rotation ? rotation + "°" : "Rotate"}`,
+              ),
+              h(
+                "button",
+                {
+                  onClick: toggleFullscreen,
+                  className:
+                    "px-2.5 py-1 rounded text-xs font-medium border border-border bg-surface-dim text-ink-secondary hover:text-ink",
+                  title: isFullscreen ? "Exit fullscreen" : "Enter fullscreen",
+                },
+                isFullscreen ? "⊠ Exit Full" : "⛶ Fullscreen",
+              ),
+            ),
+          ),
+          // ── Map canvas ────────────────────────────────────────────────────
+          h(
+            "div",
+            {
+              ref: mapContainerRef,
+              className: `no-drag mb-6 ${isFullscreen ? "fixed inset-0 z-50 bg-surface-dim p-4 flex flex-col gap-2" : ""}`,
+            },
+            isFullscreen &&
+              h(
+                "div",
+                { className: "flex items-center gap-2 flex-wrap shrink-0" },
+                h(
+                  "span",
+                  { className: "text-sm font-medium text-ink" },
+                  "Map View",
+                ),
+                rooms.length > 0 &&
+                  h(
+                    "select",
+                    {
+                      value: selectedRoomId || "",
+                      onChange: (e) =>
+                        setSelectedRoomId(e.target.value || null),
+                      className:
+                        "border border-border rounded px-2 py-1 text-xs bg-surface text-ink",
+                    },
+                    h("option", { value: "" }, "All Rooms"),
+                    rooms.map((r) =>
+                      h("option", { key: r.id, value: r.id }, r.name),
+                    ),
+                  ),
+                h(
+                  "button",
+                  {
+                    onClick: toggleFullscreen,
+                    className:
+                      "ml-auto px-2.5 py-1 rounded text-xs border border-border bg-surface-dim text-muted hover:text-ink",
+                  },
+                  "⊠ Exit Fullscreen",
+                ),
+              ),
             !rooms.length && !devices.length && !anchors.length
               ? h(EmptyState, {
-                  icon: "\uD83D\uDDFA\uFE0F",
+                  icon: "🗺️",
                   title: "No floor data yet",
                   description:
                     "Use the Setup Wizard to create rooms and place anchors, or start the engine to see live data",
@@ -4692,13 +5159,28 @@
                   rooms,
                   anchors,
                   devices,
+                  accessLevels,
                   showFpGrid,
                   gridSize: floorGridSize,
                   dxfWalls: mapDxfWalls,
                   dxfRooms: mapDxfRooms,
+                  focusRoomId: selectedRoomId,
+                  rotation,
+                  showAnchors,
+                  showRoomColors,
+                  showRoomBorders,
+                  showAnchorLabels,
+                  showTagLabels,
+                  className: isFullscreen ? "flex-1" : "",
+                  // Overlay props
+                  showRangeCircles,
+                  showRangeLines,
+                  showAllMethods,
+                  anchorRanging: anchorDetailData?.ranging || {},
+                  allMethodsData: allMethodsRaw?.methods || {},
                 }),
           ),
-          // Device summary cards
+          // ── Device cards ──────────────────────────────────────────────────
           devices.length > 0 &&
             h(
               "div",
@@ -4706,8 +5188,11 @@
                 className:
                   "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4",
               },
-              devices.map((d, i) =>
-                h(
+              devices.map((d, i) => {
+                const ranging =
+                  (anchorDetailData?.ranging || {})[d.device_id] || {};
+                const hasRanging = Object.keys(ranging).length > 0;
+                return h(
                   "div",
                   {
                     key: i,
@@ -4743,8 +5228,68 @@
                         new Date(d.timestamp).toLocaleTimeString(),
                       ),
                   ),
-                ),
-              ),
+                  // Per-anchor RSSI → distance detail (only shown when anchor-detail is active)
+                  hasRanging &&
+                    h(
+                      "div",
+                      { className: "mt-3 pt-3 border-t border-border" },
+                      h(
+                        "div",
+                        {
+                          className:
+                            "text-xs font-medium text-ink-secondary mb-1.5",
+                        },
+                        "Anchor Ranging",
+                      ),
+                      h(
+                        "div",
+                        { className: "space-y-1" },
+                        Object.entries(ranging).map(([aid, info]) =>
+                          h(
+                            "div",
+                            {
+                              key: aid,
+                              className:
+                                "flex items-center justify-between text-xs",
+                            },
+                            h(
+                              "span",
+                              { className: "text-muted font-mono" },
+                              aid,
+                            ),
+                            h(
+                              "div",
+                              { className: "flex gap-2 items-center" },
+                              h(
+                                "span",
+                                {
+                                  className: "font-mono",
+                                  style: {
+                                    color: `rgba(236,72,153,${Math.max(0.5, info.weight)})`,
+                                  },
+                                },
+                                `${info.dist_m.toFixed(1)}m`,
+                              ),
+                              h(
+                                "span",
+                                { className: "text-muted font-mono" },
+                                `${info.rssi_dbm.toFixed(0)}dBm`,
+                              ),
+                              h(
+                                "span",
+                                {
+                                  className: "text-muted",
+                                  title: `Variance weight: ${(info.weight * 100).toFixed(0)}%`,
+                                },
+                                `w=${(info.weight * 100).toFixed(0)}%`,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                );
+              }),
             ),
         );
       }
@@ -6285,18 +6830,97 @@
           color: "cyan",
           desc: "Trilateration with per-channel scalar Kalman filter. Adaptive gain tracks signal changes faster than SMA while suppressing Gaussian noise.",
         },
+        anchor: {
+          label: "Anchor Pos",
+          color: "pink",
+          desc: "C++ gradient-descent trilateration with live P0 self-calibration and per-anchor variance weighting.",
+        },
       };
 
-      // Renders an SVG map of rooms + device dots — used at both small and expanded sizes
-      function MethodMapSvg({ rooms, devices, fw, fh, width, height }) {
-        const sx = width / (fw || 20),
-          sy = height / (fh || 20);
+      // Method accent colours for SVG (keyed by METHOD_INFO colour names)
+      const METHOD_SVG_COLORS = {
+        blue: { fill: "#3b82f622", stroke: "#3b82f6", text: "#93c5fd" },
+        purple: { fill: "#8b5cf622", stroke: "#8b5cf6", text: "#c4b5fd" },
+        teal: { fill: "#14b8a622", stroke: "#14b8a6", text: "#5eead4" },
+        green: { fill: "#22c55e22", stroke: "#22c55e", text: "#86efac" },
+        orange: { fill: "#f9731622", stroke: "#f97316", text: "#fdba74" },
+        red: { fill: "#ef444422", stroke: "#ef4444", text: "#fca5a5" },
+        cyan: { fill: "#06b6d422", stroke: "#06b6d4", text: "#67e8f9" },
+        pink: { fill: "#ec489922", stroke: "#ec4899", text: "#f9a8d4" },
+        gray: { fill: "#6b728022", stroke: "#6b7280", text: "#9ca3af" },
+      };
+
+      // Stable colour list for multi-method overlay ghost pins
+      const METHOD_GHOST_COLORS = {
+        trilateration: "#3b82f6",
+        raw: "#ef4444",
+        kalman: "#06b6d4",
+        fingerprinting: "#8b5cf6",
+        gp: "#14b8a6",
+        tof: "#f97316",
+        anchor: "#ec4899",
+        ble: "#22c55e",
+      };
+
+      // Compact SVG map — used in small cards
+      function MethodMapSvg({
+        rooms,
+        devices,
+        fw,
+        fh,
+        width,
+        height,
+        methodColor = "blue",
+        focusRoomId = null,
+      }) {
+        const W = width || 260,
+          H = height || 180;
+        const PAD = 16;
+        const cols = METHOD_SVG_COLORS[methodColor] || METHOD_SVG_COLORS.gray;
+        const baseScale = Math.min(
+          (W - PAD * 2) / (fw || 20),
+          (H - PAD * 2) / (fh || 20),
+        );
+
+        // If a room is focused, compute zoom+pan into it
+        let zoom = 1,
+          panX = 0,
+          panY = 0;
+        if (focusRoomId) {
+          const room = rooms.find(
+            (r) => String(r.id || r.name) === String(focusRoomId),
+          );
+          if (room?.polygon?.length) {
+            const xs = room.polygon.map(([px]) => px);
+            const ys = room.polygon.map(([, py]) => py);
+            const minX = Math.min(...xs),
+              maxX = Math.max(...xs);
+            const minY = Math.min(...ys),
+              maxY = Math.max(...ys);
+            const rw = (maxX - minX) * baseScale || baseScale * 0.5;
+            const rh = (maxY - minY) * baseScale || baseScale * 0.5;
+            zoom = Math.max(
+              1.2,
+              Math.min(
+                8,
+                Math.min((W - PAD * 2) / rw, (H - PAD * 2) / rh) * 0.72,
+              ),
+            );
+            const contentCX = PAD + ((minX + maxX) / 2) * baseScale;
+            const contentCY = PAD + ((minY + maxY) / 2) * baseScale;
+            panX = W / 2 - contentCX * zoom;
+            panY = H / 2 - contentCY * zoom;
+          }
+        }
+
+        const tx = (v) => PAD + v * baseScale;
+        const ty = (v) => PAD + v * baseScale;
+        const small = W <= 300;
+
         return h(
           "svg",
           {
-            width,
-            height,
-            viewBox: `0 0 ${width} ${height}`,
+            viewBox: `0 0 ${W} ${H}`,
             style: {
               background: "#18181b",
               display: "block",
@@ -6305,76 +6929,93 @@
             },
             preserveAspectRatio: "xMidYMid meet",
           },
-          rooms.map((r, ri) =>
-            r.polygon?.length
-              ? h("polygon", {
-                  key: ri,
-                  points: r.polygon
-                    .map(([px, py]) => `${px * sx},${py * sy}`)
-                    .join(" "),
-                  fill: "rgba(99,102,241,0.15)",
-                  stroke: "#6366f1",
+          h(
+            "g",
+            { transform: `translate(${panX},${panY}) scale(${zoom})` },
+            // Floor boundary
+            h("rect", {
+              x: tx(0),
+              y: ty(0),
+              width: (fw || 20) * baseScale,
+              height: (fh || 20) * baseScale,
+              fill: "none",
+              stroke: "#374151",
+              strokeWidth: 1,
+              strokeDasharray: "4,2",
+            }),
+            // Rooms
+            ...rooms.map((r, ri) => {
+              if (!r.polygon?.length) return null;
+              const pts = r.polygon
+                .map(([px, py]) => `${tx(px)},${ty(py)}`)
+                .join(" ");
+              const cx =
+                r.polygon.reduce((s, [px]) => s + px, 0) / r.polygon.length;
+              const cy =
+                r.polygon.reduce((s, [, py]) => s + py, 0) / r.polygon.length;
+              const isFocused = String(r.id || r.name) === String(focusRoomId);
+              return h(
+                "g",
+                { key: ri },
+                h("polygon", {
+                  points: pts,
+                  fill: cols.fill,
+                  stroke: isFocused ? "#ae5630" : cols.stroke + "88",
+                  strokeWidth: isFocused ? 2 : 1,
+                }),
+                h(
+                  "text",
+                  {
+                    x: tx(cx),
+                    y: ty(cy),
+                    textAnchor: "middle",
+                    dominantBaseline: "middle",
+                    fill: cols.text,
+                    fontSize: small ? 8 : 11,
+                  },
+                  r.name,
+                ),
+              );
+            }),
+            // Devices
+            ...devices.map((d, di) => {
+              const r = small ? 5 : 8;
+              const fs = small ? 7 : 10;
+              return h(
+                "g",
+                { key: di },
+                h("circle", {
+                  cx: tx(d.x || 0),
+                  cy: ty(d.y || 0),
+                  r,
+                  fill: d.reachable ? "#22c55e" : "#f87171",
+                  stroke: "#fff",
                   strokeWidth: 1,
-                })
-              : null,
+                }),
+                h(
+                  "text",
+                  {
+                    x: tx(d.x || 0),
+                    y: ty(d.y || 0) - r - 2,
+                    textAnchor: "middle",
+                    fill: "#e4e4e7",
+                    fontSize: fs,
+                  },
+                  d.device_id,
+                ),
+              );
+            }),
           ),
-          rooms.map((r, ri) => {
-            if (!r.polygon?.length) return null;
-            const cx =
-              r.polygon.reduce((s, [px]) => s + px, 0) / r.polygon.length;
-            const cy =
-              r.polygon.reduce((s, [, py]) => s + py, 0) / r.polygon.length;
-            const fontSize = width > 400 ? 13 : 9;
-            return h(
-              "text",
-              {
-                key: `lbl-${ri}`,
-                x: cx * sx,
-                y: cy * sy,
-                textAnchor: "middle",
-                dominantBaseline: "middle",
-                fill: "#a5b4fc",
-                fontSize,
-              },
-              r.name,
-            );
-          }),
-          devices.map((d, di) => {
-            const r = width > 400 ? 10 : 6;
-            const fs = width > 400 ? 11 : 8;
-            return h(
-              "g",
-              { key: di },
-              h("circle", {
-                cx: (d.x || 0) * sx,
-                cy: (d.y || 0) * sy,
-                r,
-                fill: d.reachable ? "#22c55e" : "#f87171",
-                stroke: "#fff",
-                strokeWidth: 1,
-              }),
-              h(
-                "text",
-                {
-                  x: (d.x || 0) * sx,
-                  y: (d.y || 0) * sy - r - 3,
-                  textAnchor: "middle",
-                  fill: "#e4e4e7",
-                  fontSize: fs,
-                },
-                d.device_id,
-              ),
-            );
-          }),
         );
       }
 
-      // Expanded overlay for a single method map
+      // Expanded overlay — full-screen modal with zoom/pan + room focus
       function ExpandedMapOverlay({ method, onClose }) {
         const { data } = usePolling(
           () => engine.map(method).catch(() => null),
           2000,
         );
+        const [selectedRoomId, setSelectedRoomId] = useState(null);
         const rooms = data?.rooms || [];
         const devices = data?.devices || [];
         const floor = data?.floor || {};
@@ -6385,7 +7026,7 @@
           {
             className: "fixed inset-0 z-50 flex items-center justify-center",
             style: {
-              background: "rgba(0,0,0,0.6)",
+              background: "rgba(0,0,0,0.65)",
               backdropFilter: "blur(4px)",
             },
             onClick: (e) => {
@@ -6396,12 +7037,12 @@
             "div",
             {
               className:
-                "bg-panel border border-border rounded-xl shadow-2xl overflow-hidden",
+                "bg-panel border border-border rounded-xl shadow-2xl flex flex-col overflow-hidden",
               style: {
-                width: "80vw",
-                maxWidth: 900,
-                height: "70vh",
-                maxHeight: 650,
+                width: "82vw",
+                maxWidth: 960,
+                height: "75vh",
+                maxHeight: 700,
               },
             },
             // Header
@@ -6409,47 +7050,79 @@
               "div",
               {
                 className:
-                  "flex items-center justify-between px-5 py-3 border-b border-border bg-surface-dim",
+                  "flex items-center justify-between px-5 py-3 border-b border-border bg-surface-dim shrink-0",
               },
               h(
                 "div",
                 { className: "flex items-center gap-3" },
                 h(Badge, { color: mi.color || "gray" }, mi.label || method),
+                h("span", { className: "text-xs text-muted" }, mi.desc || ""),
                 h(
                   "span",
                   { className: "text-sm text-muted" },
-                  `${devices.length} device(s)`,
+                  `· ${devices.length} device(s)`,
                 ),
               ),
               h(
-                "button",
-                {
-                  className:
-                    "text-sm text-muted hover:text-ink px-2 py-1 rounded hover:bg-surface-dim",
-                  onClick: onClose,
-                },
-                "✕ Close",
+                "div",
+                { className: "flex items-center gap-2" },
+                // Room focus selector
+                rooms.length > 0 &&
+                  h(
+                    "select",
+                    {
+                      value: selectedRoomId || "",
+                      onChange: (e) =>
+                        setSelectedRoomId(e.target.value || null),
+                      className:
+                        "text-xs border border-border rounded px-2 py-1 bg-surface text-ink",
+                      style: { minWidth: 130 },
+                    },
+                    h("option", { value: "" }, "All Rooms"),
+                    rooms.map((r) =>
+                      h(
+                        "option",
+                        { key: r.id || r.name, value: r.id || r.name },
+                        r.name,
+                      ),
+                    ),
+                  ),
+                h(
+                  "button",
+                  {
+                    className:
+                      "text-sm text-muted hover:text-ink px-2.5 py-1 rounded border border-border hover:border-accent/30",
+                    onClick: onClose,
+                  },
+                  "✕ Close",
+                ),
               ),
             ),
-            // Map
+            // Map (takes remaining height, uses FloorCanvas for zoom/pan)
             h(
               "div",
-              { style: { height: "calc(100% - 90px)" }, className: "p-2" },
-              h(MethodMapSvg, {
+              { className: "flex-1 p-3 min-h-0" },
+              h(FloorCanvas, {
+                width: floor.width_m || 20,
+                height: floor.height_m || 15,
                 rooms,
                 devices,
-                fw: floor.width_m || 20,
-                fh: floor.height_m || 20,
-                width: 860,
-                height: 500,
+                anchors: [],
+                accessLevels: [],
+                focusRoomId: selectedRoomId,
+                showAnchors: false,
+                showRoomColors: true,
+                showRoomBorders: true,
+                showAnchorLabels: false,
+                showTagLabels: true,
               }),
             ),
-            // Device list footer
+            // Device footer
             h(
               "div",
               {
                 className:
-                  "px-5 py-2 border-t border-border bg-surface-dim font-mono text-xs text-muted overflow-x-auto whitespace-nowrap",
+                  "px-5 py-2 border-t border-border bg-surface-dim font-mono text-xs text-muted overflow-x-auto whitespace-nowrap shrink-0",
               },
               devices.length === 0
                 ? "No devices"
@@ -6467,27 +7140,37 @@
       // Try pywebview native window first, fall back to in-app overlay
       function _popOutMap(method, fallbackExpand) {
         if (window.pywebview && window.pywebview.api) {
-          // Desktop app — open a real native OS window on any monitor
           window.pywebview.api.open_map_window(method).catch(() => {
-            // If the native call fails, fall back to in-app overlay
             fallbackExpand && fallbackExpand(method);
           });
         } else {
-          // Browser dev mode — use in-app overlay
           fallbackExpand && fallbackExpand(method);
         }
       }
 
-      // Small map panel with both pop-out (native window) and expand (in-app overlay)
-      function MethodMapPanel({ method, onExpand }) {
+      // Small map panel — shows a compact method map with a room-focus selector
+      function MethodMapPanel({
+        method,
+        onExpand,
+        platformRooms = [],
+        floorW = 20,
+        floorH = 20,
+      }) {
         const { data } = usePolling(
           () => engine.map(method).catch(() => null),
           2000,
         );
-        const rooms = data?.rooms || [];
+        const [selectedRoomId, setSelectedRoomId] = useState(null);
+        const engineRooms = data?.rooms || [];
         const devices = data?.devices || [];
         const floor = data?.floor || {};
         const mi = METHOD_INFO[method] || {};
+
+        // Prefer platform rooms (richer geometry + ids), fall back to engine rooms
+        const displayRooms =
+          platformRooms.length > 0 ? platformRooms : engineRooms;
+        const fw = floor.width_m || floorW;
+        const fh = floor.height_m || floorH;
 
         return h(
           "div",
@@ -6495,6 +7178,7 @@
             className:
               "border border-border rounded-lg overflow-hidden bg-panel",
           },
+          // Header row
           h(
             "div",
             {
@@ -6511,7 +7195,6 @@
                 `${devices.length} device(s)`,
               ),
             ),
-            // Both buttons side by side
             h(
               "div",
               { className: "flex items-center gap-1" },
@@ -6520,7 +7203,7 @@
                 {
                   className:
                     "text-xs text-muted hover:text-ink px-1.5 py-0.5 rounded hover:bg-panel border border-border",
-                  title: "Expand in-app (fullscreen overlay)",
+                  title: "Expand in-app overlay",
                   onClick: () => onExpand && onExpand(method),
                 },
                 "⤢ expand",
@@ -6530,20 +7213,64 @@
                 {
                   className:
                     "text-xs text-muted hover:text-ink px-1.5 py-0.5 rounded hover:bg-panel border border-border",
-                  title: "Open in separate OS window (drag to any monitor)",
+                  title: "Open in separate OS window",
                   onClick: () => _popOutMap(method, onExpand),
                 },
                 "⧉ pop out",
               ),
             ),
           ),
+          // Room focus selector
+          displayRooms.length > 0 &&
+            h(
+              "div",
+              {
+                className:
+                  "flex items-center gap-1.5 px-2 py-1.5 border-b border-border bg-surface-dim",
+              },
+              h(
+                "span",
+                { className: "text-[10px] text-muted shrink-0" },
+                "Focus:",
+              ),
+              h(
+                "select",
+                {
+                  value: selectedRoomId || "",
+                  onChange: (e) => setSelectedRoomId(e.target.value || null),
+                  className:
+                    "text-[10px] border border-border rounded px-1.5 py-0.5 bg-surface text-ink flex-1 min-w-0",
+                },
+                h("option", { value: "" }, "All rooms"),
+                displayRooms.map((r) =>
+                  h(
+                    "option",
+                    { key: r.id || r.name, value: r.id || r.name },
+                    r.name,
+                  ),
+                ),
+              ),
+              selectedRoomId &&
+                h(
+                  "button",
+                  {
+                    onClick: () => setSelectedRoomId(null),
+                    className: "text-[10px] text-muted hover:text-ink shrink-0",
+                    title: "Clear focus",
+                  },
+                  "✕",
+                ),
+            ),
+          // Map
           h(MethodMapSvg, {
-            rooms,
+            rooms: displayRooms,
             devices,
-            fw: floor.width_m || 20,
-            fh: floor.height_m || 20,
+            fw,
+            fh,
             width: 260,
-            height: 180,
+            height: 170,
+            methodColor: mi.color,
+            focusRoomId: selectedRoomId,
           }),
         );
       }
@@ -7655,11 +8382,45 @@
         const [expandedMethod, setExpandedMethod] = useState(null);
         const [logLevelFilter, setLogLevelFilter] = useState("");
 
+        // Floor hierarchy for method map panels
+        const [mapBuilding, setMapBuilding] = useState(null);
+        const [mapFloor, setMapFloor] = useState(null);
+        const [mapRooms, setMapRooms] = useState([]);
+
         const { data: campuses } = useApi(() => platform.listCampuses());
         useEffect(() => {
           if (campuses?.length && !selectedCampusId)
             setSelectedCampusId(campuses[0].id);
         }, [campuses]);
+
+        // Load building+floor for method maps (auto-pick first available)
+        useEffect(() => {
+          if (!campuses?.length) return;
+          const campus = campuses[0];
+          platform
+            .listBuildings(campus.id)
+            .then((bs) => {
+              if (!bs?.length) return;
+              const b = bs[0];
+              setMapBuilding(b);
+              platform
+                .listFloors(b.id)
+                .then((fs) => {
+                  if (!fs?.length) return;
+                  setMapFloor(fs[0]);
+                })
+                .catch(() => {});
+            })
+            .catch(() => {});
+        }, [campuses]);
+
+        useEffect(() => {
+          if (!mapFloor) return;
+          platform
+            .listRooms(mapFloor.id)
+            .then((r) => setMapRooms(r || []))
+            .catch(() => {});
+        }, [mapFloor?.id]);
 
         const { data: engStatus } = usePolling(
           () => platform.engineStatus().catch(() => null),
@@ -8004,7 +8765,16 @@
           // Per-method maps
           h(
             Card,
-            { title: "Live Maps" },
+            {
+              title: "Live Maps",
+              actions:
+                mapFloor &&
+                h(
+                  "span",
+                  { className: "text-xs text-muted" },
+                  `Floor: ${mapBuilding?.name || ""} — ${mapFloor?.name || ""}`,
+                ),
+            },
             h(
               "div",
               {
@@ -8016,6 +8786,9 @@
                   key: m,
                   method: m,
                   onExpand: setExpandedMethod,
+                  platformRooms: mapRooms,
+                  floorW: mapFloor?.width_m || 20,
+                  floorH: mapFloor?.height_m || 15,
                 }),
               ),
             ),
@@ -8859,18 +9632,20 @@
 
       // ── Per-method display properties (extends METHOD_INFO) ───────────────
       const ANALYTICS_METHOD_COLORS = {
-        trilateration: "#3b82f6",  // blue
-        raw:           "#ef4444",  // red
-        kalman:        "#06b6d4",  // cyan
-        fingerprinting:"#a855f7",  // purple
-        gp:            "#14b8a6",  // teal
-        tof:           "#f97316",  // orange
-        ble:           "#22c55e",  // green
+        trilateration: "#3b82f6", // blue
+        raw: "#ef4444", // red
+        kalman: "#06b6d4", // cyan
+        fingerprinting: "#a855f7", // purple
+        gp: "#14b8a6", // teal
+        tof: "#f97316", // orange
+        ble: "#22c55e", // green
       };
 
       function getMethodColor(method) {
-        return ANALYTICS_METHOD_COLORS[method] ||
-          `hsl(${(method.charCodeAt(0) * 37) % 360},70%,55%)`;
+        return (
+          ANALYTICS_METHOD_COLORS[method] ||
+          `hsl(${(method.charCodeAt(0) * 37) % 360},70%,55%)`
+        );
       }
 
       // ── Helper: format metres nicely ─────────────────────────────────────
@@ -8881,14 +9656,16 @@
 
       // ── CDF ECharts component ─────────────────────────────────────────────
       function CdfChart({ methods, hardCapM }) {
-        const divRef   = useRef(null);
+        const divRef = useRef(null);
         const chartRef = useRef(null);
 
         // Init ECharts instance once
         useEffect(() => {
           if (!divRef.current || !window.echarts) return;
           chartRef.current = window.echarts.init(divRef.current, "dark");
-          return () => { chartRef.current && chartRef.current.dispose(); };
+          return () => {
+            chartRef.current && chartRef.current.dispose();
+          };
         }, []);
 
         // Update whenever data changes
@@ -8901,17 +9678,17 @@
           }
 
           const series = methodKeys.map((m) => {
-            const cdf = (methods[m].cdf || []);
+            const cdf = methods[m].cdf || [];
             return {
-              name:      (METHOD_INFO[m] || {}).label || m,
-              type:      "line",
-              smooth:    true,
-              symbol:    "circle",
+              name: (METHOD_INFO[m] || {}).label || m,
+              type: "line",
+              smooth: true,
+              symbol: "circle",
               symbolSize: 5,
               lineStyle: { color: getMethodColor(m), width: 2 },
               itemStyle: { color: getMethodColor(m) },
-              data:      cdf.map((pt) => [pt.threshold_m, pt.pct]),
-              markLine:  {
+              data: cdf.map((pt) => [pt.threshold_m, pt.pct]),
+              markLine: {
                 silent: true,
                 lineStyle: { type: "dashed", color: "#6b7280", width: 1 },
                 data: [{ xAxis: hardCapM || 10, name: ">10 m cap" }],
@@ -8919,44 +9696,50 @@
             };
           });
 
-          chartRef.current.setOption({
-            backgroundColor: "transparent",
-            tooltip: {
-              trigger: "axis",
-              formatter: (params) =>
-                params.map((p) =>
-                  `${p.seriesName}: <b>${p.data[1].toFixed(1)}%</b> @ ${p.data[0]}m`
-                ).join("<br/>"),
+          chartRef.current.setOption(
+            {
+              backgroundColor: "transparent",
+              tooltip: {
+                trigger: "axis",
+                formatter: (params) =>
+                  params
+                    .map(
+                      (p) =>
+                        `${p.seriesName}: <b>${p.data[1].toFixed(1)}%</b> @ ${p.data[0]}m`,
+                    )
+                    .join("<br/>"),
+              },
+              legend: {
+                top: 4,
+                textStyle: { color: "#d1d5db", fontSize: 11 },
+              },
+              grid: { left: 52, right: 24, top: 36, bottom: 40 },
+              xAxis: {
+                type: "value",
+                name: "Error (m)",
+                nameLocation: "middle",
+                nameGap: 28,
+                min: 0,
+                max: hardCapM || 10,
+                axisLabel: { color: "#9ca3af" },
+                axisLine: { lineStyle: { color: "#374151" } },
+                splitLine: { lineStyle: { color: "#1f2937" } },
+              },
+              yAxis: {
+                type: "value",
+                name: "CDF (%)",
+                nameLocation: "middle",
+                nameGap: 36,
+                min: 0,
+                max: 100,
+                axisLabel: { color: "#9ca3af", formatter: "{value}%" },
+                axisLine: { lineStyle: { color: "#374151" } },
+                splitLine: { lineStyle: { color: "#1f2937" } },
+              },
+              series,
             },
-            legend: {
-              top: 4,
-              textStyle: { color: "#d1d5db", fontSize: 11 },
-            },
-            grid: { left: 52, right: 24, top: 36, bottom: 40 },
-            xAxis: {
-              type: "value",
-              name: "Error (m)",
-              nameLocation: "middle",
-              nameGap: 28,
-              min: 0,
-              max: hardCapM || 10,
-              axisLabel: { color: "#9ca3af" },
-              axisLine:  { lineStyle: { color: "#374151" } },
-              splitLine: { lineStyle: { color: "#1f2937" } },
-            },
-            yAxis: {
-              type:  "value",
-              name:  "CDF (%)",
-              nameLocation: "middle",
-              nameGap: 36,
-              min:   0,
-              max:   100,
-              axisLabel: { color: "#9ca3af", formatter: "{value}%" },
-              axisLine:  { lineStyle: { color: "#374151" } },
-              splitLine: { lineStyle: { color: "#1f2937" } },
-            },
-            series,
-          }, /* notMerge */ true);
+            /* notMerge */ true,
+          );
         }, [methods, hardCapM]);
 
         // Resize on window resize
@@ -8966,22 +9749,27 @@
           return () => window.removeEventListener("resize", onResize);
         }, []);
 
-        return h("div", { ref: divRef, style: { width: "100%", height: "320px" } });
+        return h("div", {
+          ref: divRef,
+          style: { width: "100%", height: "320px" },
+        });
       }
 
       // ── Scatter map SVG component ─────────────────────────────────────────
       // Renders room outlines + ground truth pin + per-method position dots.
       function ScatterMap({ methods, groundTruth, mapData }) {
-        const W = 420, H = 300;
-        const rooms   = mapData?.rooms   || [];
-        const fw      = mapData?.floor?.width_m  || 10;
-        const fh      = mapData?.floor?.height_m || 10;
-        const sx = W / fw, sy = H / fh;
+        const W = 420,
+          H = 300;
+        const rooms = mapData?.rooms || [];
+        const fw = mapData?.floor?.width_m || 10;
+        const fh = mapData?.floor?.height_m || 10;
+        const sx = W / fw,
+          sy = H / fh;
 
         // Newest estimate per method
         const latest = {};
         Object.keys(methods || {}).forEach((m) => {
-          const scatter = (methods[m].scatter || []);
+          const scatter = methods[m].scatter || [];
           if (scatter.length) latest[m] = scatter[scatter.length - 1];
         });
 
@@ -8989,28 +9777,37 @@
           "svg",
           {
             viewBox: `0 0 ${W} ${H}`,
-            style: { width: "100%", height: "100%", background: "#18181b", display: "block" },
+            style: {
+              width: "100%",
+              height: "100%",
+              background: "#18181b",
+              display: "block",
+            },
           },
           // Room polygons
           ...rooms.map((r, ri) =>
             r.polygon?.length
               ? h("polygon", {
                   key: "r" + ri,
-                  points: r.polygon.map(([px, py]) => `${px * sx},${py * sy}`).join(" "),
+                  points: r.polygon
+                    .map(([px, py]) => `${px * sx},${py * sy}`)
+                    .join(" "),
                   fill: "rgba(99,102,241,0.1)",
                   stroke: "#4b5563",
                   strokeWidth: 0.8,
                 })
-              : null
+              : null,
           ),
           // Scatter trails — older dots, fading
           ...Object.keys(methods || {}).flatMap((m) => {
-            const scatter = (methods[m].scatter || []);
+            const scatter = methods[m].scatter || [];
             return scatter.slice(0, -1).map((s, i) => {
               const alpha = 0.1 + 0.35 * (i / Math.max(scatter.length - 1, 1));
               return h("circle", {
                 key: `trail-${m}-${i}`,
-                cx: s.x * sx, cy: s.y * sy, r: 3,
+                cx: s.x * sx,
+                cy: s.y * sy,
+                r: 3,
                 fill: getMethodColor(m),
                 opacity: alpha,
               });
@@ -9020,74 +9817,158 @@
           ...Object.keys(latest).map((m) => {
             const s = latest[m];
             const color = getMethodColor(m);
-            return h("g", { key: "dot-" + m },
-              h("circle", { cx: s.x * sx, cy: s.y * sy, r: 7, fill: color, opacity: 0.85 }),
-              h("text", {
-                x: s.x * sx + 9, y: s.y * sy + 4,
-                fontSize: 9, fill: color, fontWeight: "bold",
-              }, (METHOD_INFO[m] || {}).label || m),
+            return h(
+              "g",
+              { key: "dot-" + m },
+              h("circle", {
+                cx: s.x * sx,
+                cy: s.y * sy,
+                r: 7,
+                fill: color,
+                opacity: 0.85,
+              }),
+              h(
+                "text",
+                {
+                  x: s.x * sx + 9,
+                  y: s.y * sy + 4,
+                  fontSize: 9,
+                  fill: color,
+                  fontWeight: "bold",
+                },
+                (METHOD_INFO[m] || {}).label || m,
+              ),
             );
           }),
           // Ground truth marker (star / crosshair)
-          groundTruth && h("g", { key: "gt" },
-            h("circle", {
-              cx: groundTruth.x * sx, cy: groundTruth.y * sy,
-              r: 8, fill: "none", stroke: "#facc15", strokeWidth: 2,
-            }),
-            h("line", {
-              x1: groundTruth.x * sx - 12, y1: groundTruth.y * sy,
-              x2: groundTruth.x * sx + 12, y2: groundTruth.y * sy,
-              stroke: "#facc15", strokeWidth: 1.5,
-            }),
-            h("line", {
-              x1: groundTruth.x * sx, y1: groundTruth.y * sy - 12,
-              x2: groundTruth.x * sx, y2: groundTruth.y * sy + 12,
-              stroke: "#facc15", strokeWidth: 1.5,
-            }),
-            h("text", {
-              x: groundTruth.x * sx + 10, y: groundTruth.y * sy - 8,
-              fontSize: 9, fill: "#facc15",
-            }, "GT"),
-          ),
+          groundTruth &&
+            h(
+              "g",
+              { key: "gt" },
+              h("circle", {
+                cx: groundTruth.x * sx,
+                cy: groundTruth.y * sy,
+                r: 8,
+                fill: "none",
+                stroke: "#facc15",
+                strokeWidth: 2,
+              }),
+              h("line", {
+                x1: groundTruth.x * sx - 12,
+                y1: groundTruth.y * sy,
+                x2: groundTruth.x * sx + 12,
+                y2: groundTruth.y * sy,
+                stroke: "#facc15",
+                strokeWidth: 1.5,
+              }),
+              h("line", {
+                x1: groundTruth.x * sx,
+                y1: groundTruth.y * sy - 12,
+                x2: groundTruth.x * sx,
+                y2: groundTruth.y * sy + 12,
+                stroke: "#facc15",
+                strokeWidth: 1.5,
+              }),
+              h(
+                "text",
+                {
+                  x: groundTruth.x * sx + 10,
+                  y: groundTruth.y * sy - 8,
+                  fontSize: 9,
+                  fill: "#facc15",
+                },
+                "GT",
+              ),
+            ),
         );
       }
 
       // ── Stats table ───────────────────────────────────────────────────────
       function StatsTable({ methods }) {
         const rows = Object.keys(methods || {});
-        if (!rows.length) return h("p", { className: "text-zinc-500 text-sm" }, "No data yet.");
+        if (!rows.length)
+          return h("p", { className: "text-zinc-500 text-sm" }, "No data yet.");
 
         return h(
-          "div", { className: "overflow-x-auto" },
+          "div",
+          { className: "overflow-x-auto" },
           h(
             "table",
             { className: "text-xs w-full border-collapse" },
-            h("thead", null,
-              h("tr", { className: "text-zinc-400" },
-                ["Method", "N", "Mean", "Median", "P95", "Failures"].map((col) =>
-                  h("th", { key: col, className: "text-left px-2 py-1 border-b border-zinc-700" }, col)
-                )
-              )
+            h(
+              "thead",
+              null,
+              h(
+                "tr",
+                { className: "text-zinc-400" },
+                ["Method", "N", "Mean", "Median", "P95", "Failures"].map(
+                  (col) =>
+                    h(
+                      "th",
+                      {
+                        key: col,
+                        className:
+                          "text-left px-2 py-1 border-b border-zinc-700",
+                      },
+                      col,
+                    ),
+                ),
+              ),
             ),
-            h("tbody", null,
+            h(
+              "tbody",
+              null,
               rows.map((m) => {
                 const s = methods[m].stats || {};
                 const color = getMethodColor(m);
-                return h("tr", { key: m, className: "border-b border-zinc-800 hover:bg-zinc-800/40" },
-                  h("td", { className: "px-2 py-1 font-semibold", style: { color } },
-                    (METHOD_INFO[m] || {}).label || m),
-                  h("td", { className: "px-2 py-1 text-zinc-300" }, s.n_samples ?? "—"),
-                  h("td", { className: "px-2 py-1 text-zinc-300" }, fmt(s.mean_m)),
-                  h("td", { className: "px-2 py-1 text-zinc-300" }, fmt(s.median_m)),
-                  h("td", { className: "px-2 py-1 text-zinc-300" }, fmt(s.p95_m)),
-                  h("td", {
-                    className: "px-2 py-1 font-medium",
-                    style: { color: (s.failure_pct || 0) > 10 ? "#f87171" : "#86efac" },
-                  }, s.failure_pct != null ? `${s.failure_pct.toFixed(1)}%` : "—"),
+                return h(
+                  "tr",
+                  {
+                    key: m,
+                    className: "border-b border-zinc-800 hover:bg-zinc-800/40",
+                  },
+                  h(
+                    "td",
+                    { className: "px-2 py-1 font-semibold", style: { color } },
+                    (METHOD_INFO[m] || {}).label || m,
+                  ),
+                  h(
+                    "td",
+                    { className: "px-2 py-1 text-zinc-300" },
+                    s.n_samples ?? "—",
+                  ),
+                  h(
+                    "td",
+                    { className: "px-2 py-1 text-zinc-300" },
+                    fmt(s.mean_m),
+                  ),
+                  h(
+                    "td",
+                    { className: "px-2 py-1 text-zinc-300" },
+                    fmt(s.median_m),
+                  ),
+                  h(
+                    "td",
+                    { className: "px-2 py-1 text-zinc-300" },
+                    fmt(s.p95_m),
+                  ),
+                  h(
+                    "td",
+                    {
+                      className: "px-2 py-1 font-medium",
+                      style: {
+                        color:
+                          (s.failure_pct || 0) > 10 ? "#f87171" : "#86efac",
+                      },
+                    },
+                    s.failure_pct != null
+                      ? `${s.failure_pct.toFixed(1)}%`
+                      : "—",
+                  ),
                 );
-              })
-            )
-          )
+              }),
+            ),
+          ),
         );
       }
 
@@ -9096,21 +9977,20 @@
       //   const ENGINE_API = window.__IPS_ENGINE_API || "http://localhost:8000";
       // Do NOT re-declare it here — that was the cause of the 404 (wrong port).
       function AnalyticsDashboard() {
-
         // Payload state from /analytics/accuracy
-        const [payload, setPayload]           = useState(null);
-        const [debugInfo, setDebugInfo]       = useState(null);
-        const [mapData, setMapData]           = useState(null);
-        const [error, setError]               = useState(null);
-        const [debugOpen, setDebugOpen]       = useState(false);
-        const [pollCount, setPollCount]       = useState(0);
+        const [payload, setPayload] = useState(null);
+        const [debugInfo, setDebugInfo] = useState(null);
+        const [mapData, setMapData] = useState(null);
+        const [error, setError] = useState(null);
+        const [debugOpen, setDebugOpen] = useState(false);
+        const [pollCount, setPollCount] = useState(0);
 
         // Controls
-        const [gtX, setGtX]                   = useState("0");
-        const [gtY, setGtY]                   = useState("0");
-        const [scenarioOpt, setScenarioOpt]   = useState("");   // filter dropdown
-        const [scenarioTag, setScenarioTag]   = useState("");   // tagging input
-        const [windowS, setWindowS]           = useState(60);
+        const [gtX, setGtX] = useState("0");
+        const [gtY, setGtY] = useState("0");
+        const [scenarioOpt, setScenarioOpt] = useState(""); // filter dropdown
+        const [scenarioTag, setScenarioTag] = useState(""); // tagging input
+        const [windowS, setWindowS] = useState(60);
         const [pollingActive, setPollingActive] = useState(true);
 
         const pollRef = useRef(null);
@@ -9122,22 +10002,33 @@
           const fetchAll = async () => {
             try {
               const [accRes, dbgRes, mapRes] = await Promise.all([
-                fetch(`${ENGINE_API}/analytics/accuracy?scenario=${encodeURIComponent(scenarioOpt)}&window_s=${windowS}`),
+                fetch(
+                  `${ENGINE_API}/analytics/accuracy?scenario=${encodeURIComponent(scenarioOpt)}&window_s=${windowS}`,
+                ),
                 fetch(`${ENGINE_API}/analytics/debug`),
                 fetch(`${ENGINE_API}/map?method=trilateration`),
               ]);
-              if (!accRes.ok) throw new Error(`HTTP ${accRes.status} from /analytics/accuracy`);
+              if (!accRes.ok)
+                throw new Error(
+                  `HTTP ${accRes.status} from /analytics/accuracy`,
+                );
               const accData = await accRes.json();
 
               // ── Console diagnostics (visible in browser DevTools → Console) ──
               const methodKeys = Object.keys(accData.methods || {});
-              console.group(`[Analytics poll] methods=${methodKeys.length}  gt=(${accData.ground_truth?.x?.toFixed(2)}, ${accData.ground_truth?.y?.toFixed(2)})`);
+              console.group(
+                `[Analytics poll] methods=${methodKeys.length}  gt=(${accData.ground_truth?.x?.toFixed(2)}, ${accData.ground_truth?.y?.toFixed(2)})`,
+              );
               if (methodKeys.length === 0) {
-                console.warn("[Analytics] payload.methods is EMPTY — no data has been pushed yet");
+                console.warn(
+                  "[Analytics] payload.methods is EMPTY — no data has been pushed yet",
+                );
               } else {
                 methodKeys.forEach((m) => {
                   const md = accData.methods[m];
-                  console.log(`  ${m}: n_in_window=${md.n_in_window}  stats.n=${md.stats?.n_samples}  failure=${md.stats?.failure_pct}%`);
+                  console.log(
+                    `  ${m}: n_in_window=${md.n_in_window}  stats.n=${md.stats?.n_samples}  failure=${md.stats?.failure_pct}%`,
+                  );
                 });
               }
 
@@ -9145,13 +10036,21 @@
                 const dbg = await dbgRes.json();
                 setDebugInfo(dbg);
                 if (dbg.push_total === 0) {
-                  console.error("[Analytics] push_total=0 — _analytics.push() has never been called. Check that localization is running and _store_decision is being reached.");
+                  console.error(
+                    "[Analytics] push_total=0 — _analytics.push() has never been called. Check that localization is running and _store_decision is being reached.",
+                  );
                 } else {
-                  console.log(`[Analytics] push_total=${dbg.push_total}  push_skipped=${dbg.push_skipped}  cpp=${dbg.cpp_available}  gt=(${dbg.ground_truth?.x}, ${dbg.ground_truth?.y})`);
+                  console.log(
+                    `[Analytics] push_total=${dbg.push_total}  push_skipped=${dbg.push_skipped}  cpp=${dbg.cpp_available}  gt=(${dbg.ground_truth?.x}, ${dbg.ground_truth?.y})`,
+                  );
                   Object.entries(dbg.per_method || {}).forEach(([m, md]) => {
                     const allOutliers = md.n_outliers === md.n_total;
                     const msg = `  buffer[${m}]: n=${md.n_total}  outliers=${md.n_outliers}  newest_err=${md.newest_err_m}m  age=${md.newest_age_s}s`;
-                    if (allOutliers) console.warn(msg + "  ← ALL OUTLIERS: ground truth position is probably wrong (still at 0,0?)");
+                    if (allOutliers)
+                      console.warn(
+                        msg +
+                          "  ← ALL OUTLIERS: ground truth position is probably wrong (still at 0,0?)",
+                      );
                     else console.log(msg);
                   });
                 }
@@ -9166,8 +10065,12 @@
 
               // Sync GT inputs on first load (avoid overwriting user's typed value)
               if (accData.ground_truth) {
-                setGtX((prev) => prev === "0" ? String(accData.ground_truth.x) : prev);
-                setGtY((prev) => prev === "0" ? String(accData.ground_truth.y) : prev);
+                setGtX((prev) =>
+                  prev === "0" ? String(accData.ground_truth.x) : prev,
+                );
+                setGtY((prev) =>
+                  prev === "0" ? String(accData.ground_truth.y) : prev,
+                );
               }
             } catch (e) {
               console.error("[Analytics fetch error]", e);
@@ -9183,18 +10086,21 @@
         // ── Apply ground truth ────────────────────────────────────────────────
         const applyGT = async () => {
           await fetch(`${ENGINE_API}/analytics/ground_truth`, {
-            method:  "POST",
+            method: "POST",
             headers: { "Content-Type": "application/json" },
-            body:    JSON.stringify({ x: parseFloat(gtX) || 0, y: parseFloat(gtY) || 0 }),
+            body: JSON.stringify({
+              x: parseFloat(gtX) || 0,
+              y: parseFloat(gtY) || 0,
+            }),
           });
         };
 
         // ── Set scenario tag ──────────────────────────────────────────────────
         const applyScenarioTag = async () => {
           await fetch(`${ENGINE_API}/analytics/scenario`, {
-            method:  "POST",
+            method: "POST",
             headers: { "Content-Type": "application/json" },
-            body:    JSON.stringify({ scenario: scenarioTag }),
+            body: JSON.stringify({ scenario: scenarioTag }),
           });
         };
 
@@ -9204,10 +10110,10 @@
           setPayload(null);
         };
 
-        const methods     = payload?.methods       || {};
-        const gt          = payload?.ground_truth  || { x: 0, y: 0 };
-        const hardCap     = payload?.hard_cap_m    || 10;
-        const scenarios   = payload?.scenarios_present || [];
+        const methods = payload?.methods || {};
+        const gt = payload?.ground_truth || { x: 0, y: 0 };
+        const hardCap = payload?.hard_cap_m || 10;
+        const scenarios = payload?.scenarios_present || [];
         const windowLabel = payload?.time_window_s || windowS;
         const methodCount = Object.keys(methods).length;
 
@@ -9220,14 +10126,25 @@
           h(
             "div",
             { className: "flex items-center justify-between flex-wrap gap-2" },
-            h("h1", { className: "text-xl font-bold text-white" }, "📊 Analytics Dashboard"),
+            h(
+              "h1",
+              { className: "text-xl font-bold text-white" },
+              "📊 Analytics Dashboard",
+            ),
             h(
               "div",
               { className: "flex items-center gap-2 text-xs" },
               methodCount > 0
-                ? h("span", { className: "text-green-400" },
-                    `${methodCount} method${methodCount !== 1 ? "s" : ""} active`)
-                : h("span", { className: "text-zinc-500" }, "No data yet — start localization to populate"),
+                ? h(
+                    "span",
+                    { className: "text-green-400" },
+                    `${methodCount} method${methodCount !== 1 ? "s" : ""} active`,
+                  )
+                : h(
+                    "span",
+                    { className: "text-zinc-500" },
+                    "No data yet — start localization to populate",
+                  ),
               h(
                 "button",
                 {
@@ -9238,136 +10155,247 @@
                       : "bg-zinc-700 hover:bg-zinc-600 text-zinc-300"
                   }`,
                 },
-                pollingActive ? "⏸ Pause" : "▶ Resume"
+                pollingActive ? "⏸ Pause" : "▶ Resume",
               ),
               h(
                 "button",
                 {
                   onClick: clearAll,
-                  className: "px-2 py-1 rounded text-xs font-medium bg-red-900 hover:bg-red-700 text-white",
+                  className:
+                    "px-2 py-1 rounded text-xs font-medium bg-red-900 hover:bg-red-700 text-white",
                 },
-                "🗑 Clear All"
+                "🗑 Clear All",
               ),
-            )
+            ),
           ),
 
           // ── Error banner ────────────────────────────────────────────────────
-          error && h(
-            "div",
-            { className: "rounded bg-red-900/50 border border-red-700 px-3 py-2 text-sm text-red-300" },
-            `⚠ Engine unreachable: ${error}`
-          ),
+          error &&
+            h(
+              "div",
+              {
+                className:
+                  "rounded bg-red-900/50 border border-red-700 px-3 py-2 text-sm text-red-300",
+              },
+              `⚠ Engine unreachable: ${error}`,
+            ),
 
           // ── Debug panel ─────────────────────────────────────────────────────
           h(
             "div",
-            { className: "rounded border border-zinc-700 bg-zinc-900/60 text-xs" },
+            {
+              className:
+                "rounded border border-zinc-700 bg-zinc-900/60 text-xs",
+            },
             // header / toggle
             h(
               "button",
               {
                 onClick: () => setDebugOpen((o) => !o),
-                className: "w-full flex items-center justify-between px-3 py-2 text-zinc-400 hover:text-zinc-200",
+                className:
+                  "w-full flex items-center justify-between px-3 py-2 text-zinc-400 hover:text-zinc-200",
               },
-              h("span", null,
-                `🔬 Debug  •  polls=${pollCount}  `
-                + (debugInfo
-                  ? `push_total=${debugInfo.push_total}  skipped=${debugInfo.push_skipped}  `
-                    + `cpp=${debugInfo.cpp_available ? "✓" : "✗"}  `
-                    + `gt=(${Number(debugInfo.ground_truth?.x).toFixed(2)}, ${Number(debugInfo.ground_truth?.y).toFixed(2)})  `
-                    + `methods=[${(debugInfo.method_keys || []).join(", ") || "none"}]`
-                  : "fetching…")
+              h(
+                "span",
+                null,
+                `🔬 Debug  •  polls=${pollCount}  ` +
+                  (debugInfo
+                    ? `push_total=${debugInfo.push_total}  skipped=${debugInfo.push_skipped}  ` +
+                      `cpp=${debugInfo.cpp_available ? "✓" : "✗"}  ` +
+                      `gt=(${Number(debugInfo.ground_truth?.x).toFixed(2)}, ${Number(debugInfo.ground_truth?.y).toFixed(2)})  ` +
+                      `methods=[${(debugInfo.method_keys || []).join(", ") || "none"}]`
+                    : "fetching…"),
               ),
               h("span", null, debugOpen ? "▲" : "▼"),
             ),
             // expandable body
-            debugOpen && h(
-              "div",
-              { className: "border-t border-zinc-700 p-3 space-y-2" },
-
-              // Warning banners for known bad states
-              debugInfo && debugInfo.push_total === 0 && h(
+            debugOpen &&
+              h(
                 "div",
-                { className: "rounded bg-amber-900/50 border border-amber-600 px-3 py-2 text-amber-300" },
-                "⚠ push_total = 0  — No data has reached the analytics engine. ",
-                "Make sure localization is running (POST /poll/start) and decisions are being issued ",
-                "(check /decisions/trilateration for recent entries).",
-              ),
+                { className: "border-t border-zinc-700 p-3 space-y-2" },
 
-              debugInfo && Object.keys(debugInfo.per_method || {}).length > 0 &&
-              Object.values(debugInfo.per_method).every((md) => md.n_outliers === md.n_total && md.n_total > 0) && h(
-                "div",
-                { className: "rounded bg-amber-900/50 border border-amber-600 px-3 py-2 text-amber-300" },
-                `⚠ All ${Object.keys(debugInfo.per_method).length} method buffer(s) are 100% outliers (error > ${debugInfo.hard_cap_m}m). `,
-                "The Ground Truth position is probably still at (0, 0). ",
-                "Set the correct GT coordinates above and click 'Set'.",
-              ),
-
-              // Per-method buffer table
-              debugInfo && Object.keys(debugInfo.per_method || {}).length > 0 && h(
-                "div",
-                null,
-                h("p", { className: "text-zinc-500 mb-1 font-semibold" }, "Buffer state:"),
-                h(
-                  "table",
-                  { className: "w-full border-collapse text-zinc-300" },
-                  h("thead", null,
-                    h("tr", { className: "text-zinc-500" },
-                      ["Method", "N buf", "Outliers", "Newest err (m)", "Newest pos", "Age (s)", "Scenarios"].map((c) =>
-                        h("th", { key: c, className: "text-left px-2 py-0.5 border-b border-zinc-800" }, c)
-                      )
-                    )
+                // Warning banners for known bad states
+                debugInfo &&
+                  debugInfo.push_total === 0 &&
+                  h(
+                    "div",
+                    {
+                      className:
+                        "rounded bg-amber-900/50 border border-amber-600 px-3 py-2 text-amber-300",
+                    },
+                    "⚠ push_total = 0  — No data has reached the analytics engine. ",
+                    "Make sure localization is running (POST /poll/start) and decisions are being issued ",
+                    "(check /decisions/trilateration for recent entries).",
                   ),
-                  h("tbody", null,
-                    Object.entries(debugInfo.per_method || {}).map(([m, md]) =>
-                      h("tr", { key: m, className: "border-b border-zinc-800/50" },
-                        h("td", { className: "px-2 py-0.5 font-semibold", style: { color: getMethodColor(m) } }, m),
-                        h("td", { className: "px-2 py-0.5" }, md.n_total),
-                        h("td", {
-                          className: "px-2 py-0.5",
-                          style: { color: md.n_outliers === md.n_total && md.n_total > 0 ? "#f87171" : "#86efac" },
-                        }, `${md.n_outliers} / ${md.n_total}`),
-                        h("td", { className: "px-2 py-0.5" }, md.newest_err_m != null ? md.newest_err_m.toFixed(4) : "—"),
-                        h("td", { className: "px-2 py-0.5" },
-                          md.newest_pos ? `(${md.newest_pos[0]}, ${md.newest_pos[1]})` : "—"),
-                        h("td", { className: "px-2 py-0.5" }, md.newest_age_s ?? "—"),
-                        h("td", { className: "px-2 py-0.5 text-zinc-500" },
-                          (md.scenarios || []).join(", ") || "(none)"),
-                      )
-                    )
-                  )
-                )
-              ),
 
-              // Raw JSON toggle
-              h(
-                "details",
-                { className: "mt-2" },
-                h("summary", { className: "text-zinc-500 cursor-pointer hover:text-zinc-300" },
-                  "Raw /analytics/debug JSON"),
-                h(
-                  "pre",
-                  {
-                    className: "mt-1 p-2 rounded bg-zinc-950 text-zinc-400 overflow-x-auto max-h-64 text-xs leading-relaxed",
-                  },
-                  debugInfo ? JSON.stringify(debugInfo, null, 2) : "no data yet"
-                )
-              ),
+                debugInfo &&
+                  Object.keys(debugInfo.per_method || {}).length > 0 &&
+                  Object.values(debugInfo.per_method).every(
+                    (md) => md.n_outliers === md.n_total && md.n_total > 0,
+                  ) &&
+                  h(
+                    "div",
+                    {
+                      className:
+                        "rounded bg-amber-900/50 border border-amber-600 px-3 py-2 text-amber-300",
+                    },
+                    `⚠ All ${Object.keys(debugInfo.per_method).length} method buffer(s) are 100% outliers (error > ${debugInfo.hard_cap_m}m). `,
+                    "The Ground Truth position is probably still at (0, 0). ",
+                    "Set the correct GT coordinates above and click 'Set'.",
+                  ),
 
-              h(
-                "details",
-                { className: "mt-1" },
-                h("summary", { className: "text-zinc-500 cursor-pointer hover:text-zinc-300" },
-                  "Raw /analytics/accuracy JSON (methods block)"),
+                // Per-method buffer table
+                debugInfo &&
+                  Object.keys(debugInfo.per_method || {}).length > 0 &&
+                  h(
+                    "div",
+                    null,
+                    h(
+                      "p",
+                      { className: "text-zinc-500 mb-1 font-semibold" },
+                      "Buffer state:",
+                    ),
+                    h(
+                      "table",
+                      { className: "w-full border-collapse text-zinc-300" },
+                      h(
+                        "thead",
+                        null,
+                        h(
+                          "tr",
+                          { className: "text-zinc-500" },
+                          [
+                            "Method",
+                            "N buf",
+                            "Outliers",
+                            "Newest err (m)",
+                            "Newest pos",
+                            "Age (s)",
+                            "Scenarios",
+                          ].map((c) =>
+                            h(
+                              "th",
+                              {
+                                key: c,
+                                className:
+                                  "text-left px-2 py-0.5 border-b border-zinc-800",
+                              },
+                              c,
+                            ),
+                          ),
+                        ),
+                      ),
+                      h(
+                        "tbody",
+                        null,
+                        Object.entries(debugInfo.per_method || {}).map(
+                          ([m, md]) =>
+                            h(
+                              "tr",
+                              {
+                                key: m,
+                                className: "border-b border-zinc-800/50",
+                              },
+                              h(
+                                "td",
+                                {
+                                  className: "px-2 py-0.5 font-semibold",
+                                  style: { color: getMethodColor(m) },
+                                },
+                                m,
+                              ),
+                              h("td", { className: "px-2 py-0.5" }, md.n_total),
+                              h(
+                                "td",
+                                {
+                                  className: "px-2 py-0.5",
+                                  style: {
+                                    color:
+                                      md.n_outliers === md.n_total &&
+                                      md.n_total > 0
+                                        ? "#f87171"
+                                        : "#86efac",
+                                  },
+                                },
+                                `${md.n_outliers} / ${md.n_total}`,
+                              ),
+                              h(
+                                "td",
+                                { className: "px-2 py-0.5" },
+                                md.newest_err_m != null
+                                  ? md.newest_err_m.toFixed(4)
+                                  : "—",
+                              ),
+                              h(
+                                "td",
+                                { className: "px-2 py-0.5" },
+                                md.newest_pos
+                                  ? `(${md.newest_pos[0]}, ${md.newest_pos[1]})`
+                                  : "—",
+                              ),
+                              h(
+                                "td",
+                                { className: "px-2 py-0.5" },
+                                md.newest_age_s ?? "—",
+                              ),
+                              h(
+                                "td",
+                                { className: "px-2 py-0.5 text-zinc-500" },
+                                (md.scenarios || []).join(", ") || "(none)",
+                              ),
+                            ),
+                        ),
+                      ),
+                    ),
+                  ),
+
+                // Raw JSON toggle
                 h(
-                  "pre",
-                  {
-                    className: "mt-1 p-2 rounded bg-zinc-950 text-zinc-400 overflow-x-auto max-h-64 text-xs leading-relaxed",
-                  },
-                  payload ? JSON.stringify(payload.methods, null, 2) : "no data yet"
-                )
+                  "details",
+                  { className: "mt-2" },
+                  h(
+                    "summary",
+                    {
+                      className:
+                        "text-zinc-500 cursor-pointer hover:text-zinc-300",
+                    },
+                    "Raw /analytics/debug JSON",
+                  ),
+                  h(
+                    "pre",
+                    {
+                      className:
+                        "mt-1 p-2 rounded bg-zinc-950 text-zinc-400 overflow-x-auto max-h-64 text-xs leading-relaxed",
+                    },
+                    debugInfo
+                      ? JSON.stringify(debugInfo, null, 2)
+                      : "no data yet",
+                  ),
+                ),
+
+                h(
+                  "details",
+                  { className: "mt-1" },
+                  h(
+                    "summary",
+                    {
+                      className:
+                        "text-zinc-500 cursor-pointer hover:text-zinc-300",
+                    },
+                    "Raw /analytics/accuracy JSON (methods block)",
+                  ),
+                  h(
+                    "pre",
+                    {
+                      className:
+                        "mt-1 p-2 rounded bg-zinc-950 text-zinc-400 overflow-x-auto max-h-64 text-xs leading-relaxed",
+                    },
+                    payload
+                      ? JSON.stringify(payload.methods, null, 2)
+                      : "no data yet",
+                  ),
+                ),
               ),
-            )
           ),
 
           // ── Controls bar ────────────────────────────────────────────────────
@@ -9379,42 +10407,64 @@
             h(
               "div",
               { className: "bg-zinc-800 rounded-lg p-3 space-y-2" },
-              h("p", { className: "text-xs font-semibold text-zinc-300 uppercase tracking-wide" },
-                "📍 Ground Truth Position"),
+              h(
+                "p",
+                {
+                  className:
+                    "text-xs font-semibold text-zinc-300 uppercase tracking-wide",
+                },
+                "📍 Ground Truth Position",
+              ),
               h(
                 "div",
                 { className: "flex items-center gap-2" },
                 h("label", { className: "text-xs text-zinc-400 w-4" }, "X"),
                 h("input", {
-                  type: "number", step: "0.01", value: gtX,
+                  type: "number",
+                  step: "0.01",
+                  value: gtX,
                   onChange: (e) => setGtX(e.target.value),
-                  className: "flex-1 bg-zinc-700 text-white text-xs rounded px-2 py-1 w-0",
+                  className:
+                    "flex-1 bg-zinc-700 text-white text-xs rounded px-2 py-1 w-0",
                 }),
                 h("label", { className: "text-xs text-zinc-400 w-4" }, "Y"),
                 h("input", {
-                  type: "number", step: "0.01", value: gtY,
+                  type: "number",
+                  step: "0.01",
+                  value: gtY,
                   onChange: (e) => setGtY(e.target.value),
-                  className: "flex-1 bg-zinc-700 text-white text-xs rounded px-2 py-1 w-0",
+                  className:
+                    "flex-1 bg-zinc-700 text-white text-xs rounded px-2 py-1 w-0",
                 }),
                 h(
                   "button",
                   {
                     onClick: applyGT,
-                    className: "px-2 py-1 bg-blue-700 hover:bg-blue-600 text-white text-xs rounded",
+                    className:
+                      "px-2 py-1 bg-blue-700 hover:bg-blue-600 text-white text-xs rounded",
                   },
-                  "Set"
+                  "Set",
                 ),
               ),
-              h("p", { className: "text-xs text-zinc-500" },
-                `Current GT: (${Number(gt.x).toFixed(2)}, ${Number(gt.y).toFixed(2)}) m`),
+              h(
+                "p",
+                { className: "text-xs text-zinc-500" },
+                `Current GT: (${Number(gt.x).toFixed(2)}, ${Number(gt.y).toFixed(2)}) m`,
+              ),
             ),
 
             // Scenario tagging
             h(
               "div",
               { className: "bg-zinc-800 rounded-lg p-3 space-y-2" },
-              h("p", { className: "text-xs font-semibold text-zinc-300 uppercase tracking-wide" },
-                "🏷 Tag Scenario"),
+              h(
+                "p",
+                {
+                  className:
+                    "text-xs font-semibold text-zinc-300 uppercase tracking-wide",
+                },
+                "🏷 Tag Scenario",
+              ),
               h(
                 "div",
                 { className: "flex items-center gap-2" },
@@ -9423,37 +10473,53 @@
                   value: scenarioTag,
                   placeholder: "e.g. LOS, NLOS, Facing North",
                   onChange: (e) => setScenarioTag(e.target.value),
-                  className: "flex-1 bg-zinc-700 text-white text-xs rounded px-2 py-1",
+                  className:
+                    "flex-1 bg-zinc-700 text-white text-xs rounded px-2 py-1",
                 }),
                 h(
                   "button",
                   {
                     onClick: applyScenarioTag,
-                    className: "px-2 py-1 bg-purple-700 hover:bg-purple-600 text-white text-xs rounded",
+                    className:
+                      "px-2 py-1 bg-purple-700 hover:bg-purple-600 text-white text-xs rounded",
                   },
-                  "Tag"
+                  "Tag",
                 ),
               ),
-              h("p", { className: "text-xs text-zinc-500" },
-                `Active tag: ${payload?.current_scenario || "(none)"}`),
+              h(
+                "p",
+                { className: "text-xs text-zinc-500" },
+                `Active tag: ${payload?.current_scenario || "(none)"}`,
+              ),
             ),
 
             // CDF filter + window
             h(
               "div",
               { className: "bg-zinc-800 rounded-lg p-3 space-y-2" },
-              h("p", { className: "text-xs font-semibold text-zinc-300 uppercase tracking-wide" },
-                "🔍 CDF Filters"),
+              h(
+                "p",
+                {
+                  className:
+                    "text-xs font-semibold text-zinc-300 uppercase tracking-wide",
+                },
+                "🔍 CDF Filters",
+              ),
               h(
                 "div",
                 { className: "flex items-center gap-2" },
-                h("label", { className: "text-xs text-zinc-400 shrink-0" }, "Scenario:"),
+                h(
+                  "label",
+                  { className: "text-xs text-zinc-400 shrink-0" },
+                  "Scenario:",
+                ),
                 h(
                   "select",
                   {
                     value: scenarioOpt,
                     onChange: (e) => setScenarioOpt(e.target.value),
-                    className: "flex-1 bg-zinc-700 text-white text-xs rounded px-2 py-1",
+                    className:
+                      "flex-1 bg-zinc-700 text-white text-xs rounded px-2 py-1",
                   },
                   h("option", { value: "" }, "All scenarios"),
                   ...scenarios.map((s) => h("option", { key: s, value: s }, s)),
@@ -9462,10 +10528,16 @@
               h(
                 "div",
                 { className: "flex items-center gap-2" },
-                h("label", { className: "text-xs text-zinc-400 shrink-0" },
-                  `Window: ${windowLabel}s`),
+                h(
+                  "label",
+                  { className: "text-xs text-zinc-400 shrink-0" },
+                  `Window: ${windowLabel}s`,
+                ),
                 h("input", {
-                  type: "range", min: 10, max: 300, step: 10,
+                  type: "range",
+                  min: 10,
+                  max: 300,
+                  step: 10,
                   value: windowS,
                   onChange: (e) => setWindowS(Number(e.target.value)),
                   className: "flex-1 accent-blue-500",
@@ -9486,14 +10558,26 @@
               h(
                 "div",
                 { className: "flex items-center justify-between mb-2" },
-                h("h2", { className: "text-sm font-semibold text-white" },
-                  "Cumulative Distribution Function"),
-                h("span", { className: "text-xs text-zinc-500" },
-                  `X-axis capped at ${hardCap} m (outliers → failure bucket)`),
+                h(
+                  "h2",
+                  { className: "text-sm font-semibold text-white" },
+                  "Cumulative Distribution Function",
+                ),
+                h(
+                  "span",
+                  { className: "text-xs text-zinc-500" },
+                  `X-axis capped at ${hardCap} m (outliers → failure bucket)`,
+                ),
               ),
               methodCount === 0
-                ? h("div", { className: "flex items-center justify-center h-72 text-zinc-600 text-sm" },
-                    "Waiting for localization data…")
+                ? h(
+                    "div",
+                    {
+                      className:
+                        "flex items-center justify-center h-72 text-zinc-600 text-sm",
+                    },
+                    "Waiting for localization data…",
+                  )
                 : h(CdfChart, { methods, hardCapM: hardCap }),
             ),
 
@@ -9504,14 +10588,23 @@
               h(
                 "div",
                 { className: "flex items-center justify-between mb-2" },
-                h("h2", { className: "text-sm font-semibold text-white" },
-                  "Live Position Scatter"),
-                h("span", { className: "text-xs text-zinc-500" },
-                  "🟡 GT  •  dots = latest estimate per method"),
+                h(
+                  "h2",
+                  { className: "text-sm font-semibold text-white" },
+                  "Live Position Scatter",
+                ),
+                h(
+                  "span",
+                  { className: "text-xs text-zinc-500" },
+                  "🟡 GT  •  dots = latest estimate per method",
+                ),
               ),
               h(
                 "div",
-                { className: "rounded overflow-hidden", style: { aspectRatio: "14/10" } },
+                {
+                  className: "rounded overflow-hidden",
+                  style: { aspectRatio: "14/10" },
+                },
                 h(ScatterMap, { methods, groundTruth: gt, mapData }),
               ),
               // Method legend
@@ -9531,7 +10624,7 @@
                       },
                     },
                     (METHOD_INFO[m] || {}).label || m,
-                  )
+                  ),
                 ),
               ),
             ),
@@ -9544,10 +10637,16 @@
             h(
               "div",
               { className: "flex items-center justify-between mb-2" },
-              h("h2", { className: "text-sm font-semibold text-white" },
-                "Algorithm Comparison Summary"),
-              h("span", { className: "text-xs text-zinc-500" },
-                `Failure = error > ${hardCap} m  •  Stats over all scenarios / full buffer`),
+              h(
+                "h2",
+                { className: "text-sm font-semibold text-white" },
+                "Algorithm Comparison Summary",
+              ),
+              h(
+                "span",
+                { className: "text-xs text-zinc-500" },
+                `Failure = error > ${hardCap} m  •  Stats over all scenarios / full buffer`,
+              ),
             ),
             h(StatsTable, { methods }),
           ),
@@ -9569,39 +10668,42 @@
       function EspFlashPage() {
         const PLATFORM_API = window.PLATFORM_API || "http://localhost:8000";
 
-        const [ports, setPorts]             = useState([]);
-        const [portsError, setPortsError]   = useState(null);
-        const [deviceType, setDeviceType]   = useState("anchor");
-        const [deviceNum, setDeviceNum]     = useState(0);
-        const [serialPort, setSerialPort]   = useState("");
-        const [wifiSsid, setWifiSsid]       = useState("EAP1250");
-        const [wifiPass, setWifiPass]       = useState("");
-        const [brokerUri, setBrokerUri]     = useState("mqtt://192.168.100.10:1883");
-        const [locationId, setLocationId]   = useState("lab_1");
-        const [floorId, setFloorId]         = useState("floor_1");
-        const [anchorX, setAnchorX]         = useState(0);
-        const [anchorY, setAnchorY]         = useState(0);
-        const [apChannel, setApChannel]     = useState(6);
-        const [tagChannel, setTagChannel]   = useState(1);
-        const [logLines, setLogLines]       = useState([]);
-        const [running, setRunning]         = useState(false);
-        const [result, setResult]           = useState(null);   // "ok" | "error"
+        const [ports, setPorts] = useState([]);
+        const [portsError, setPortsError] = useState(null);
+        const [deviceType, setDeviceType] = useState("anchor");
+        const [deviceNum, setDeviceNum] = useState(0);
+        const [serialPort, setSerialPort] = useState("");
+        const [wifiSsid, setWifiSsid] = useState("EAP1250");
+        const [wifiPass, setWifiPass] = useState("");
+        const [brokerUri, setBrokerUri] = useState(
+          "mqtt://192.168.100.10:1883",
+        );
+        const [locationId, setLocationId] = useState("lab_1");
+        const [floorId, setFloorId] = useState("floor_1");
+        const [anchorX, setAnchorX] = useState(0);
+        const [anchorY, setAnchorY] = useState(0);
+        const [apChannel, setApChannel] = useState(6);
+        const [tagChannel, setTagChannel] = useState(1);
+        const [logLines, setLogLines] = useState([]);
+        const [running, setRunning] = useState(false);
+        const [result, setResult] = useState(null); // "ok" | "error"
         const logRef = useRef(null);
 
         // Scroll log to bottom whenever it grows
         useEffect(() => {
-          if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+          if (logRef.current)
+            logRef.current.scrollTop = logRef.current.scrollHeight;
         }, [logLines]);
 
         // Load serial ports on mount
         useEffect(() => {
           fetch(`${PLATFORM_API}/api/v1/esp/ports`)
-            .then(r => r.json())
-            .then(d => {
+            .then((r) => r.json())
+            .then((d) => {
               setPorts(d.ports || []);
               if (d.ports && d.ports.length > 0) setSerialPort(d.ports[0].port);
             })
-            .catch(e => setPortsError(String(e)));
+            .catch((e) => setPortsError(String(e)));
         }, []);
 
         function startFlash() {
@@ -9610,18 +10712,18 @@
           setRunning(true);
 
           const body = {
-            device_type:     deviceType,
-            device_num:      parseInt(deviceNum),
-            serial_port:     serialPort,
-            wifi_ssid:       wifiSsid,
-            wifi_pass:       wifiPass,
+            device_type: deviceType,
+            device_num: parseInt(deviceNum),
+            serial_port: serialPort,
+            wifi_ssid: wifiSsid,
+            wifi_pass: wifiPass,
             mqtt_broker_uri: brokerUri,
-            location_id:     locationId,
-            floor_id:        floorId,
-            anchor_x_cm:     parseInt(anchorX),
-            anchor_y_cm:     parseInt(anchorY),
-            ap_channel:      parseInt(apChannel),
-            tag_ap_channel:  parseInt(tagChannel),
+            location_id: locationId,
+            floor_id: floorId,
+            anchor_x_cm: parseInt(anchorX),
+            anchor_y_cm: parseInt(anchorY),
+            ap_channel: parseInt(apChannel),
+            tag_ap_channel: parseInt(tagChannel),
           };
 
           fetch(`${PLATFORM_API}/api/v1/esp/flash`, {
@@ -9629,28 +10731,33 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body),
           })
-          .then(r => {
-            if (!r.ok) return r.json().then(d => { throw new Error(d.detail || "Flash failed"); });
-            // Connect to SSE stream
-            const es = new EventSource(`${PLATFORM_API}/api/v1/esp/flash/stream`);
-            es.onmessage = (e) => {
-              setLogLines(prev => [...prev, e.data]);
-            };
-            es.addEventListener("close", () => {
-              es.close();
-              setRunning(false);
-            });
-            es.onerror = () => {
-              es.close();
+            .then((r) => {
+              if (!r.ok)
+                return r.json().then((d) => {
+                  throw new Error(d.detail || "Flash failed");
+                });
+              // Connect to SSE stream
+              const es = new EventSource(
+                `${PLATFORM_API}/api/v1/esp/flash/stream`,
+              );
+              es.onmessage = (e) => {
+                setLogLines((prev) => [...prev, e.data]);
+              };
+              es.addEventListener("close", () => {
+                es.close();
+                setRunning(false);
+              });
+              es.onerror = () => {
+                es.close();
+                setRunning(false);
+                setResult("error");
+              };
+            })
+            .catch((e) => {
+              setLogLines((prev) => [...prev, `ERROR: ${e.message}`]);
               setRunning(false);
               setResult("error");
-            };
-          })
-          .catch(e => {
-            setLogLines(prev => [...prev, `ERROR: ${e.message}`]);
-            setRunning(false);
-            setResult("error");
-          });
+            });
         }
 
         function cancelFlash() {
@@ -9659,155 +10766,350 @@
           setResult("error");
         }
 
-        const inputCls = "w-full border border-border rounded px-2 py-1.5 text-sm bg-surface text-foreground";
+        const inputCls =
+          "w-full border border-border rounded px-2 py-1.5 text-sm bg-surface text-foreground";
         const labelCls = "block text-xs font-medium text-muted mb-1";
 
-        return h("div", { className: "max-w-3xl mx-auto space-y-6 p-4" },
+        return h(
+          "div",
+          { className: "max-w-3xl mx-auto space-y-6 p-4" },
 
           // Header
-          h("div", null,
-            h("h1", { className: "text-xl font-bold text-foreground" }, "⚡ ESP32 Flash Tool"),
-            h("p", { className: "text-sm text-muted mt-1" },
+          h(
+            "div",
+            null,
+            h(
+              "h1",
+              { className: "text-xl font-bold text-foreground" },
+              "⚡ ESP32 Flash Tool",
+            ),
+            h(
+              "p",
+              { className: "text-sm text-muted mt-1" },
               "Generate device_config.h, build firmware with idf.py, and flash over USB-serial. ",
-              "Ensure the ESP-IDF export script has been sourced (", h("code", { className: "text-xs bg-surface-2 px-1 rounded" }, ". $IDF_PATH/export.sh"), ") before starting."
-            )
+              "Ensure the ESP-IDF export script has been sourced (",
+              h(
+                "code",
+                { className: "text-xs bg-surface-2 px-1 rounded" },
+                ". $IDF_PATH/export.sh",
+              ),
+              ") before starting.",
+            ),
           ),
 
           // Network connectivity note
-          h("div", { className: "rounded border border-orange-500/30 bg-orange-500/10 p-3 text-sm text-orange-300" },
+          h(
+            "div",
+            {
+              className:
+                "rounded border border-orange-500/30 bg-orange-500/10 p-3 text-sm text-orange-300",
+            },
             h("strong", null, "Server reachability: "),
             "Set MQTT Broker URI to the IP address of this server on the WiFi network the ESP will join. ",
-            "The ESP32 STA interface must be able to reach the broker at that address."
+            "The ESP32 STA interface must be able to reach the broker at that address.",
           ),
 
           // Form
-          h(Card, { title: "Device Configuration" },
-            h("div", { className: "grid grid-cols-2 gap-4" },
+          h(
+            Card,
+            { title: "Device Configuration" },
+            h(
+              "div",
+              { className: "grid grid-cols-2 gap-4" },
 
               // Device type
-              h("div", null,
+              h(
+                "div",
+                null,
                 h("label", { className: labelCls }, "Device Type"),
-                h("select", { value: deviceType, onChange: e => setDeviceType(e.target.value), className: inputCls },
+                h(
+                  "select",
+                  {
+                    value: deviceType,
+                    onChange: (e) => setDeviceType(e.target.value),
+                    className: inputCls,
+                  },
                   h("option", { value: "anchor" }, "Anchor"),
                   h("option", { value: "tag" }, "Tag"),
-                )
+                ),
               ),
 
               // Device number
-              h("div", null,
-                h("label", { className: labelCls }, deviceType === "anchor" ? "Anchor ID" : "Tag Number"),
-                h("input", { type: "number", min: 0, max: 99, value: deviceNum,
-                  onChange: e => setDeviceNum(e.target.value), className: inputCls })
+              h(
+                "div",
+                null,
+                h(
+                  "label",
+                  { className: labelCls },
+                  deviceType === "anchor" ? "Anchor ID" : "Tag Number",
+                ),
+                h("input", {
+                  type: "number",
+                  min: 0,
+                  max: 99,
+                  value: deviceNum,
+                  onChange: (e) => setDeviceNum(e.target.value),
+                  className: inputCls,
+                }),
               ),
 
               // Serial port
-              h("div", null,
+              h(
+                "div",
+                null,
                 h("label", { className: labelCls }, "Serial Port"),
                 portsError
-                  ? h("input", { type: "text", value: serialPort, onChange: e => setSerialPort(e.target.value),
-                      placeholder: "/dev/ttyUSB0 or COM3", className: inputCls })
-                  : h("select", { value: serialPort, onChange: e => setSerialPort(e.target.value), className: inputCls },
+                  ? h("input", {
+                      type: "text",
+                      value: serialPort,
+                      onChange: (e) => setSerialPort(e.target.value),
+                      placeholder: "/dev/ttyUSB0 or COM3",
+                      className: inputCls,
+                    })
+                  : h(
+                      "select",
+                      {
+                        value: serialPort,
+                        onChange: (e) => setSerialPort(e.target.value),
+                        className: inputCls,
+                      },
                       ports.length === 0
                         ? h("option", { value: "" }, "No ports detected")
-                        : ports.map(p => h("option", { key: p.port, value: p.port }, `${p.port} — ${p.description}`))
-                    )
+                        : ports.map((p) =>
+                            h(
+                              "option",
+                              { key: p.port, value: p.port },
+                              `${p.port} — ${p.description}`,
+                            ),
+                          ),
+                    ),
               ),
 
               // Refresh ports
-              h("div", { className: "flex items-end" },
-                h("button", {
-                  onClick: () => {
-                    fetch(`${PLATFORM_API}/api/v1/esp/ports`)
-                      .then(r => r.json())
-                      .then(d => { setPorts(d.ports || []); setPortsError(null); })
-                      .catch(e => setPortsError(String(e)));
+              h(
+                "div",
+                { className: "flex items-end" },
+                h(
+                  "button",
+                  {
+                    onClick: () => {
+                      fetch(`${PLATFORM_API}/api/v1/esp/ports`)
+                        .then((r) => r.json())
+                        .then((d) => {
+                          setPorts(d.ports || []);
+                          setPortsError(null);
+                        })
+                        .catch((e) => setPortsError(String(e)));
+                    },
+                    className:
+                      "w-full py-1.5 text-sm border border-border rounded hover:bg-surface-2 text-muted",
                   },
-                  className: "w-full py-1.5 text-sm border border-border rounded hover:bg-surface-2 text-muted"
-                }, "↺ Refresh Ports")
+                  "↺ Refresh Ports",
+                ),
               ),
 
               // WiFi SSID
-              h("div", null,
+              h(
+                "div",
+                null,
                 h("label", { className: labelCls }, "WiFi SSID (STA network)"),
-                h("input", { type: "text", value: wifiSsid, onChange: e => setWifiSsid(e.target.value), className: inputCls })
+                h("input", {
+                  type: "text",
+                  value: wifiSsid,
+                  onChange: (e) => setWifiSsid(e.target.value),
+                  className: inputCls,
+                }),
               ),
 
               // WiFi password
-              h("div", null,
-                h("label", { className: labelCls }, "WiFi Password (leave blank for open)"),
-                h("input", { type: "password", value: wifiPass, onChange: e => setWifiPass(e.target.value),
-                  placeholder: "open network", className: inputCls })
+              h(
+                "div",
+                null,
+                h(
+                  "label",
+                  { className: labelCls },
+                  "WiFi Password (leave blank for open)",
+                ),
+                h("input", {
+                  type: "password",
+                  value: wifiPass,
+                  onChange: (e) => setWifiPass(e.target.value),
+                  placeholder: "open network",
+                  className: inputCls,
+                }),
               ),
 
               // MQTT Broker URI — full width
-              h("div", { className: "col-span-2" },
-                h("label", { className: labelCls }, "MQTT Broker URI (server IP on the WiFi network)"),
-                h("input", { type: "text", value: brokerUri, onChange: e => setBrokerUri(e.target.value), className: inputCls })
+              h(
+                "div",
+                { className: "col-span-2" },
+                h(
+                  "label",
+                  { className: labelCls },
+                  "MQTT Broker URI (server IP on the WiFi network)",
+                ),
+                h("input", {
+                  type: "text",
+                  value: brokerUri,
+                  onChange: (e) => setBrokerUri(e.target.value),
+                  className: inputCls,
+                }),
               ),
 
               // Location / Floor
-              h("div", null,
+              h(
+                "div",
+                null,
                 h("label", { className: labelCls }, "Location ID"),
-                h("input", { type: "text", value: locationId, onChange: e => setLocationId(e.target.value), className: inputCls })
+                h("input", {
+                  type: "text",
+                  value: locationId,
+                  onChange: (e) => setLocationId(e.target.value),
+                  className: inputCls,
+                }),
               ),
-              h("div", null,
+              h(
+                "div",
+                null,
                 h("label", { className: labelCls }, "Floor ID"),
-                h("input", { type: "text", value: floorId, onChange: e => setFloorId(e.target.value), className: inputCls })
+                h("input", {
+                  type: "text",
+                  value: floorId,
+                  onChange: (e) => setFloorId(e.target.value),
+                  className: inputCls,
+                }),
               ),
 
               // Anchor-specific fields
-              deviceType === "anchor" && h(React.Fragment, null,
-                h("div", null,
-                  h("label", { className: labelCls }, "Anchor X position (cm)"),
-                  h("input", { type: "number", value: anchorX, onChange: e => setAnchorX(e.target.value), className: inputCls })
+              deviceType === "anchor" &&
+                h(
+                  React.Fragment,
+                  null,
+                  h(
+                    "div",
+                    null,
+                    h(
+                      "label",
+                      { className: labelCls },
+                      "Anchor X position (cm)",
+                    ),
+                    h("input", {
+                      type: "number",
+                      value: anchorX,
+                      onChange: (e) => setAnchorX(e.target.value),
+                      className: inputCls,
+                    }),
+                  ),
+                  h(
+                    "div",
+                    null,
+                    h(
+                      "label",
+                      { className: labelCls },
+                      "Anchor Y position (cm)",
+                    ),
+                    h("input", {
+                      type: "number",
+                      value: anchorY,
+                      onChange: (e) => setAnchorY(e.target.value),
+                      className: inputCls,
+                    }),
+                  ),
+                  h(
+                    "div",
+                    null,
+                    h(
+                      "label",
+                      { className: labelCls },
+                      "AP Channel (all anchors must match)",
+                    ),
+                    h("input", {
+                      type: "number",
+                      min: 1,
+                      max: 13,
+                      value: apChannel,
+                      onChange: (e) => setApChannel(e.target.value),
+                      className: inputCls,
+                    }),
+                  ),
                 ),
-                h("div", null,
-                  h("label", { className: labelCls }, "Anchor Y position (cm)"),
-                  h("input", { type: "number", value: anchorY, onChange: e => setAnchorY(e.target.value), className: inputCls })
-                ),
-                h("div", null,
-                  h("label", { className: labelCls }, "AP Channel (all anchors must match)"),
-                  h("input", { type: "number", min: 1, max: 13, value: apChannel, onChange: e => setApChannel(e.target.value), className: inputCls })
-                ),
-              ),
 
               // Tag-specific fields
-              deviceType === "tag" && h("div", null,
-                h("label", { className: labelCls }, "Tag AP Channel"),
-                h("input", { type: "number", min: 1, max: 13, value: tagChannel, onChange: e => setTagChannel(e.target.value), className: inputCls })
-              ),
+              deviceType === "tag" &&
+                h(
+                  "div",
+                  null,
+                  h("label", { className: labelCls }, "Tag AP Channel"),
+                  h("input", {
+                    type: "number",
+                    min: 1,
+                    max: 13,
+                    value: tagChannel,
+                    onChange: (e) => setTagChannel(e.target.value),
+                    className: inputCls,
+                  }),
+                ),
             ),
 
             // Actions
-            h("div", { className: "flex gap-3 mt-4" },
-              h("button", {
-                onClick: startFlash,
-                disabled: running || !serialPort,
-                className: `px-4 py-2 text-sm rounded font-medium ${running || !serialPort
-                  ? "bg-surface-2 text-muted cursor-not-allowed"
-                  : "bg-accent text-white hover:opacity-90"}`
-              }, running ? "⏳ Building & Flashing…" : "⚡ Build + Flash"),
+            h(
+              "div",
+              { className: "flex gap-3 mt-4" },
+              h(
+                "button",
+                {
+                  onClick: startFlash,
+                  disabled: running || !serialPort,
+                  className: `px-4 py-2 text-sm rounded font-medium ${
+                    running || !serialPort
+                      ? "bg-surface-2 text-muted cursor-not-allowed"
+                      : "bg-accent text-white hover:opacity-90"
+                  }`,
+                },
+                running ? "⏳ Building & Flashing…" : "⚡ Build + Flash",
+              ),
 
-              running && h("button", {
-                onClick: cancelFlash,
-                className: "px-4 py-2 text-sm rounded border border-red-500/50 text-red-400 hover:bg-red-500/10"
-              }, "✕ Cancel"),
-            )
+              running &&
+                h(
+                  "button",
+                  {
+                    onClick: cancelFlash,
+                    className:
+                      "px-4 py-2 text-sm rounded border border-red-500/50 text-red-400 hover:bg-red-500/10",
+                  },
+                  "✕ Cancel",
+                ),
+            ),
           ),
 
           // Log output
-          h(Card, { title: "Build / Flash Log" },
-            result === "ok" && h("div", { className: "mb-2 text-sm text-green-400 font-medium" }, "✓ Flash succeeded"),
-            result === "error" && h("div", { className: "mb-2 text-sm text-red-400 font-medium" }, "✗ Flash failed — see log above"),
-            h("pre", {
-              ref: logRef,
-              className: "h-80 overflow-y-auto text-xs text-muted font-mono bg-surface-2 rounded p-3 whitespace-pre-wrap"
-            },
+          h(
+            Card,
+            { title: "Build / Flash Log" },
+            result === "ok" &&
+              h(
+                "div",
+                { className: "mb-2 text-sm text-green-400 font-medium" },
+                "✓ Flash succeeded",
+              ),
+            result === "error" &&
+              h(
+                "div",
+                { className: "mb-2 text-sm text-red-400 font-medium" },
+                "✗ Flash failed — see log above",
+              ),
+            h(
+              "pre",
+              {
+                ref: logRef,
+                className:
+                  "h-80 overflow-y-auto text-xs text-muted font-mono bg-surface-2 rounded p-3 whitespace-pre-wrap",
+              },
               logLines.length === 0
                 ? "(output will appear here once flashing starts)"
-                : logLines.join("\n")
-            )
-          )
+                : logLines.join("\n"),
+            ),
+          ),
         );
       }
 
@@ -9825,13 +11127,13 @@
         return h(
           Layout,
           { page, setPage, engineHealth },
-          page === "wizard"    && h(SetupWizard),
-          page === "localize"  && h(LocalizationPage),
-          page === "survey"    && h(SurveyPage),
-          page === "map"       && h(MapView),
-          page === "devices"   && h(DeviceTables),
-          page === "logs"      && h(LogsPage),
-          page === "espflash"  && h(EspFlashPage),
+          page === "wizard" && h(SetupWizard),
+          page === "localize" && h(LocalizationPage),
+          page === "survey" && h(SurveyPage),
+          page === "map" && h(MapView),
+          page === "devices" && h(DeviceTables),
+          page === "logs" && h(LogsPage),
+          page === "espflash" && h(EspFlashPage),
           page === "analytics" && h(AnalyticsDashboard),
         );
       }
