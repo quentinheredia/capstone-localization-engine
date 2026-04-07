@@ -155,20 +155,22 @@ public:
     // ── Variance / confidence ─────────────────────────────────────────────────
 
     /**
-     * Inter-anchor variance detection.                              (STUB)
+     * Inter-anchor variance detection.
      *
-     * Full implementation (deferred):
-     *   For every anchor pair (A, B) where A has observed B:
-     *     1. Get smoothed RSSI: ia_smoothed_[A][B]
-     *     2. Measured distance: rssi_to_distance_m(rssi, P0_B, n_B)
-     *     3. Expected distance: sqrt((xA-xB)² + (yA-yB)²)
-     *     4. error_m = |measured - expected|
-     *     5. weight  = 1 / (1 + error_m²)   (smooth sigmoid-like decay)
-     *   Each anchor's weight is the mean over all its observable pairs.
-     *   anchor_weights_ is updated in-place so get_position() picks it up
-     *   automatically.
+     * For every anchor pair (A observes B) in ia_smoothed_:
+     *   1. measured_dist = rssi_to_distance_m(ia_smoothed[A][B], P0_B, n_B)
+     *      (uses B's static tx characteristics to control for hardware bias)
+     *   2. true_dist = ||A.pos - B.pos||₂  (from configured geometry)
+     *   3. error_m = |measured_dist - true_dist|
+     *   4. weight  = 1 / (1 + error_m²)  — inverse-square decay
+     *      (0 m error → 1.0,  1 m → 0.5,  3 m → 0.1)
+     *   anchor_weights_[A] = mean(weight) across all observed peers.
      *
-     * @returns Current per-anchor weight map (currently all 1.0).
+     * Calls update_anchor_weights_locked() internally.
+     * get_all_positions() also calls it automatically each cycle, so
+     * explicit calls are only needed for diagnostic read-outs.
+     *
+     * @returns Updated {anchor_id → weight} map.
      */
     std::unordered_map<std::string, double> rssi_variance_detection();
 

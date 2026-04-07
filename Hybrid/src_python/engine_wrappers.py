@@ -1856,14 +1856,8 @@ class AnchorPosEngineWrapper:
         Used by the ``/map/anchor-detail`` endpoint to drive range circles
         and anchor→device range lines on the live floor-plan overlay.
         """
-        import math
-
         rssi_cache = self._engine.get_target_rssi_cache()  # {ap_id: {dev_id: rssi}}
         weights    = self.get_anchor_weights()             # {anchor_id: weight}
-
-        # Collect per-AP config (static P0 / n used when live calibration unavailable)
-        sys_cfg    = {}   # we stored these during __init__; re-derive from anchor_map
-        anchor_map = self._engine.create_anchor_map()  # {anchor_id: (x, y)}
 
         # Build {device_id: {anchor_id: {...}}}
         result: dict = {}

@@ -224,10 +224,9 @@ AnchorPosResult AnchorPosEngine::trilateration_solver(
         auto   w_it   = anchor_weights_.find(c.id);
         if (w_it != anchor_weights_.end()) weight = w_it->second;
 
-        // Weight ∈ [0,1]: low weight → blend distance toward max_dist_m_
-        // (a high-distance value pulls the solver away from that anchor).
-        // TODO: replace this simple blend with proper weighted least-squares
-        //       once rssi_variance_detection() is fully implemented.
+        // Weight ∈ [0,1] from update_anchor_weights_locked() (variance detection).
+        // Low weight → blend distance toward max_dist_m_, deprioritising the
+        // anchor in the gradient-descent solver without hard-excluding it.
         double blended_dist = c.dist_m * weight + max_dist_m_ * (1.0 - weight);
 
         anchors.push_back({c.x, c.y});
@@ -313,7 +312,7 @@ std::vector<std::string> AnchorPosEngine::get_known_targets() const {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Variance detection  (STUB — implementation deferred)
+//  Variance detection
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Private — caller MUST hold mu_.
