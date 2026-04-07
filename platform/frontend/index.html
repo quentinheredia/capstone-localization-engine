@@ -1635,6 +1635,9 @@
         const [roomJsonText, setRoomJsonText] = useState("");
         const [roomImporting, setRoomImporting] = useState(false);
         const [roomImportMsg, setRoomImportMsg] = useState(null);
+        const [flipX, setFlipX] = useState(false);
+        const [flipY, setFlipY] = useState(false);
+        const [hoverCoords, setHoverCoords] = useState(null);
 
         const svgRef = useRef(null);
         const [dims, setDims] = useState({ w: 900, h: 600 });
@@ -1666,10 +1669,10 @@
         const scaleX = (dims.w - PADDING * 2) / fw;
         const scaleY = (dims.h - PADDING * 2) / fh;
         const sc = Math.min(scaleX, scaleY);
-        const tx = (v) => PADDING + v * sc;
-        const ty = (v) => PADDING + v * sc;
-        const fromSvgX = (px) => (px - PADDING) / sc;
-        const fromSvgY = (py) => (py - PADDING) / sc;
+        const tx = (v) => flipX ? PADDING + (fw - v) * sc : PADDING + v * sc;
+        const ty = (v) => flipY ? PADDING + (fh - v) * sc : PADDING + v * sc;
+        const fromSvgX = (px) => flipX ? fw - (px - PADDING) / sc : (px - PADDING) / sc;
+        const fromSvgY = (py) => flipY ? fh - (py - PADDING) / sc : (py - PADDING) / sc;
 
         // Accurate SVG coordinate from a pointer event using the CTM.
         // Handles viewBox zoom/pan and any CSS scaling automatically.
@@ -2137,6 +2140,15 @@
           }
         };
         const handleSvgMouseMove = (e) => {
+          // Track cursor world coordinates for overlay display
+          const svgPtH = clientToSVG(e);
+          const hx = fromSvgX(svgPtH.x);
+          const hy = fromSvgY(svgPtH.y);
+          if (hx >= 0 && hx <= fw && hy >= 0 && hy <= fh) {
+            setHoverCoords({ x: hx, y: hy });
+          } else {
+            setHoverCoords(null);
+          }
           // Pan viewport
           if (panDrag) {
             const svgEl = svgRef.current;
@@ -2509,6 +2521,33 @@
             ),
             h("div", { className: "w-px h-6 bg-border mx-2" }),
             h(
+              "button",
+              {
+                onClick: () => setFlipX((v) => !v),
+                title: "Flip canvas horizontally",
+                className: `px-2 py-1 rounded text-sm border transition-colors ${
+                  flipX
+                    ? "bg-accent text-white border-accent"
+                    : "bg-surface-dim hover:bg-panel border-transparent hover:border-border text-ink-secondary"
+                }`,
+              },
+              "\u2194 Flip H",
+            ),
+            h(
+              "button",
+              {
+                onClick: () => setFlipY((v) => !v),
+                title: "Flip canvas vertically",
+                className: `px-2 py-1 rounded text-sm border transition-colors ${
+                  flipY
+                    ? "bg-accent text-white border-accent"
+                    : "bg-surface-dim hover:bg-panel border-transparent hover:border-border text-ink-secondary"
+                }`,
+              },
+              "\u2195 Flip V",
+            ),
+            h("div", { className: "w-px h-6 bg-border mx-2" }),
+            h(
               "label",
               {
                 className:
@@ -2570,7 +2609,10 @@
             // Canvas
             h(
               "div",
-              { className: "flex-1 min-w-0" },
+              {
+                className: "flex-1 min-w-0 relative",
+                onMouseLeave: () => setHoverCoords(null),
+              },
               h(
                 "svg",
                 {
@@ -2922,6 +2964,15 @@
                   );
                 }),
               ),
+              hoverCoords &&
+                h(
+                  "div",
+                  {
+                    className:
+                      "absolute bottom-2 left-2 bg-panel/90 border border-border rounded px-2 py-1 text-xs font-mono text-ink-secondary pointer-events-none",
+                  },
+                  `x\u00a0${hoverCoords.x.toFixed(2)}m  \u00b7  y\u00a0${hoverCoords.y.toFixed(2)}m`,
+                ),
             ),
 
             // Side panel
@@ -4182,6 +4233,8 @@
         className = "",
         dxfWalls = [],
         dxfRooms = [],
+        flipX = false,
+        flipY = false,
       }) {
         const PADDING = 40;
         const svgRef = useRef(null);
@@ -4207,8 +4260,8 @@
         const scaleX = (dims.w - PADDING * 2) / fw;
         const scaleY = (dims.h - PADDING * 2) / fh;
         const scale = Math.min(scaleX, scaleY);
-        const tx = (v) => PADDING + v * scale;
-        const ty = (v) => PADDING + v * scale;
+        const tx = (v) => flipX ? PADDING + (fw - v) * scale : PADDING + v * scale;
+        const ty = (v) => flipY ? PADDING + (fh - v) * scale : PADDING + v * scale;
 
         const ROOM_COLORS = [
           "#3b82f620",
@@ -4529,6 +4582,8 @@
         const [floorGridSize, setFloorGridSize] = useState(1.0);
         const [mapDxfWalls, setMapDxfWalls] = useState([]);
         const [mapDxfRooms, setMapDxfRooms] = useState([]);
+        const [flipX, setFlipX] = useState(false);
+        const [flipY, setFlipY] = useState(false);
 
         // Load hierarchy from platform
         const { data: campuses } = useApi(() => platform.listCampuses());
@@ -4659,12 +4714,43 @@
                   ),
                 ),
               ),
+            // Flip controls
+            h(
+              "div",
+              { className: "flex items-center gap-1 ml-auto" },
+              h(
+                "button",
+                {
+                  onClick: () => setFlipX((v) => !v),
+                  className: `px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
+                    flipX
+                      ? "bg-accent text-white border-accent"
+                      : "bg-surface-dim text-ink-secondary border-border hover:text-ink"
+                  }`,
+                  title: "Flip horizontal",
+                },
+                "\u2194 Flip H",
+              ),
+              h(
+                "button",
+                {
+                  onClick: () => setFlipY((v) => !v),
+                  className: `px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
+                    flipY
+                      ? "bg-accent text-white border-accent"
+                      : "bg-surface-dim text-ink-secondary border-border hover:text-ink"
+                  }`,
+                  title: "Flip vertical",
+                },
+                "\u2195 Flip V",
+              ),
+            ),
             // Fingerprint Grid toggle
             h(
               "label",
               {
                 className:
-                  "flex items-center gap-2 text-sm text-ink-secondary cursor-pointer ml-auto",
+                  "flex items-center gap-2 text-sm text-ink-secondary cursor-pointer",
               },
               h("input", {
                 type: "checkbox",
@@ -4696,6 +4782,8 @@
                   gridSize: floorGridSize,
                   dxfWalls: mapDxfWalls,
                   dxfRooms: mapDxfRooms,
+                  flipX,
+                  flipY,
                 }),
           ),
           // Device summary cards
